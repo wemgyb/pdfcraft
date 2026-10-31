@@ -35,7 +35,8 @@ fn harness(setup: impl FnOnce(&mut PdfCraftApp) + 'static) -> Harness<'static, P
 fn home_shows_welcome_and_tools() {
     let h = harness(|_| {});
     h.get_by_label_contains("Welcome to PdfCraft");
-    assert!(h.query_all_by_label("Organize pages").count() >= 2, "tool list + home card");
+    assert_eq!(h.query_all_by_label("Organize pages").count(), 1, "custom Home keeps the recommended card and hides Tools");
+    assert!(!h.state().left_open);
     h.get_by_label("Open file");
 }
 
@@ -117,7 +118,7 @@ fn home_removes_one_recent_file_or_clears_them_all() {
 
 #[test]
 fn every_catalog_tool_is_listed_after_view_more() {
-    let mut h = harness(|_| {});
+    let mut h = harness(|app| app.left_open = true);
     h.get_by_label("View more").click();
     h.run_steps(3);
     for g in pdfcraft_engine::catalog::TOOL_GROUPS {
@@ -128,7 +129,9 @@ fn every_catalog_tool_is_listed_after_view_more() {
 #[test]
 fn opening_a_pdf_shows_comments_and_bookmarks() {
     let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
-    // Documents with comments open on the Comments panel, like Acrobat.
+    assert_eq!(h.state().right, Some(pdfcraft_ui_egui::RightPanel::Pages));
+    h.get_by_label("Comments").click();
+    h.run_steps(3);
     h.get_by_label_contains("Check the numbers");
     h.get_by_label("Bookmarks").click();
     h.run_steps(3);
@@ -136,14 +139,13 @@ fn opening_a_pdf_shows_comments_and_bookmarks() {
     h.get_by_label("Beta section");
 }
 
-/// #1590: side panes the user closed stay closed when PdfCraft restarts and opens another PDF,
-/// even one with comments and bookmarks, which would otherwise open on the Comments panel.
+/// 定制版打开 PDF 时显示 Pages 并隐藏 Tools；退出时保存的面板状态不覆盖打开偏好。
 #[test]
-fn closed_side_panes_stay_closed_after_a_restart_and_opening_a_pdf() {
+fn custom_document_open_restores_pages_panel_after_restart() {
     use pdfcraft_ui_egui::RightPanel;
     let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
-    assert_eq!(h.state().right, Some(RightPanel::Comments));
-    assert!(h.state().left_open);
+    assert_eq!(h.state().right, Some(RightPanel::Pages));
+    assert!(!h.state().left_open);
     h.state_mut().choose_right_panel(None);
     h.state_mut().set_option("left", "closed").unwrap();
     h.run_steps(3);
@@ -152,13 +154,13 @@ fn closed_side_panes_stay_closed_after_a_restart_and_opening_a_pdf() {
         app.restore(&saved);
         app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens");
     });
-    assert_eq!(h.state().right, None, "the closed right pane reopened");
+    assert_eq!(h.state().right, Some(RightPanel::Pages), "custom open restores Pages");
     assert!(!h.state().left_open, "the closed left pane reopened");
     assert!(h.query_by_label_contains("Check the numbers").is_none());
-    // Within a session too: another document opens with them closed.
+    // 同一会话的后续文件采用相同的打开偏好。
     h.state_mut().open_bytes("again.pdf", None, FIXTURE.to_vec()).unwrap();
     h.run_steps(3);
-    assert_eq!(h.state().right, None);
+    assert_eq!(h.state().right, Some(RightPanel::Pages));
     assert!(!h.state().left_open);
 }
 
@@ -172,7 +174,7 @@ fn read_mode_rail_buttons_open_their_panels() {
         app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens");
     });
     assert_eq!(h.state().mode, Mode::Read);
-    assert_eq!(h.state().right, None, "Read mode opens with the panes closed");
+    assert_eq!(h.state().right, Some(RightPanel::Pages), "custom Read mode opens with Pages");
     assert!(h.query_by_label("Alpha section").is_none());
     h.get_by_label("Bookmarks").click();
     h.run_steps(3);
@@ -184,11 +186,14 @@ fn read_mode_rail_buttons_open_their_panels() {
     h.run_steps(3);
     assert_eq!(h.state().right, None);
     assert!(h.query_by_label("Alpha section").is_none());
-    // A document that asks for its outline (/PageMode /UseOutlines) shows it in Read mode too.
+    // PDF 的页面布局继续生效，导航面板仍采用定制版 Pages 偏好。
     let pdf = String::from_utf8(FIXTURE.to_vec()).unwrap().replace("/Outlines 6 0 R", "/Outlines 6 0 R /PageMode /UseOutlines");
     h.state_mut().open_bytes("outline.pdf", None, pdf.into_bytes()).unwrap();
     h.run_steps(3);
     assert_eq!(h.state().mode, Mode::Read);
+    assert_eq!(h.state().right, Some(RightPanel::Pages));
+    h.get_by_label("Bookmarks").click();
+    h.run_steps(3);
     h.get_by_label("Alpha section");
 }
 
@@ -196,7 +201,10 @@ fn read_mode_rail_buttons_open_their_panels() {
 #[test]
 fn read_mode_closes_the_panes_and_leaving_it_brings_them_back() {
     use pdfcraft_ui_egui::{Mode, RightPanel};
-    let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
+    let mut h = harness(|app| {
+        app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens");
+        app.choose_right_panel(Some(RightPanel::Comments));
+    });
     assert_eq!(h.state().right, Some(RightPanel::Comments));
     h.get_by_label("Read").click();
     h.run_steps(3);
@@ -222,7 +230,10 @@ fn read_mode_closes_the_panes_and_leaving_it_brings_them_back() {
 #[test]
 fn a_pane_closed_in_read_mode_stays_closed_when_leaving_it() {
     use pdfcraft_ui_egui::{Mode, RightPanel};
-    let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
+    let mut h = harness(|app| {
+        app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens");
+        app.choose_right_panel(Some(RightPanel::Comments));
+    });
     assert_eq!(h.state().right, Some(RightPanel::Comments));
     h.get_by_label("Read").click();
     h.run_steps(3);
@@ -842,7 +853,7 @@ fn newly_opened_pdfs_use_the_default_workspace() {
     app.open_bytes("initial-view.pdf", None, pdf.into_bytes()).unwrap();
     assert_eq!(app.mode, Mode::Read);
     assert_eq!(app.views.last().unwrap().layout, pdfcraft_ui_egui::canvas::PageLayout::TwoUp);
-    assert_eq!(app.right, Some(pdfcraft_ui_egui::RightPanel::Bookmarks));
+    assert_eq!(app.right, Some(pdfcraft_ui_egui::RightPanel::Pages));
 }
 
 #[test]

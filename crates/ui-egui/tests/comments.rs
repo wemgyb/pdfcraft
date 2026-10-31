@@ -1042,7 +1042,7 @@ fn the_opacity_set_for_a_tool_goes_into_its_new_comments() {
 #[test]
 fn a_closed_comments_panel_stays_closed_when_picking_comment_tools() {
     use pdfcraft_ui_egui::RightPanel;
-    let mut h = harness(|_| {});
+    let mut h = harness(|app| app.right = None);
     assert_eq!(h.state().right, None);
     assert!(h.state_mut().execute("comment.highlight"));
     h.run_steps(2);

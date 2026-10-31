@@ -27,6 +27,10 @@ const TAB_HEIGHT: f32 = 30.0;
 const STRIP_BUTTON: f32 = 28.0;
 
 pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    if app.single_document_window {
+        return;
+    }
+
     let t = Tokens::get(ui.ctx());
     // macOS: the strip is the 28 pt title bar, so the traffic lights are centred in it; tabs and
     // buttons shrink to keep a margin above and below.
@@ -697,7 +701,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
                 ui.label(egui::RichText::new(page_count.to_string()).font(theme::regular(11.0)).color(t.text_muted));
                 let edit = egui::TextEdit::singleline(&mut view.page_input)
-                    .id(egui::Id::new("page-input"))
+                    .id(crate::window_id(ui.ctx(), "page-input"))
                     .desired_width(34.0)
                     .horizontal_align(Align::Center)
                     .font(theme::medium(12.0))

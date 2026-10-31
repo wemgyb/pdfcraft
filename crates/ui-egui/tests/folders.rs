@@ -205,6 +205,7 @@ fn a_long_pdf_name_is_cut_before_its_date_and_size() {
     dir.file(&name, FIXTURE, Duration::from_secs(10));
     let folder = dir.path();
     let mut h = harness(move |app| {
+        app.left_open = true; // 明确测试有工具侧栏时的窄列表布局。
         app.pin_folder(&folder);
     });
     h.run_steps(2);

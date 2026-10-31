@@ -45,6 +45,9 @@ fn harness(pages: usize, setup: impl FnOnce(&mut PdfCraftApp) + 'static) -> Harn
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
         app.open_bytes("doc.pdf", None, fixture(pages)).expect("fixture opens");
+        // 通用编辑测试明确使用工具栏布局；定制版启动布局由专门测试覆盖。
+        app.left_open = true;
+        app.right = None;
         setup(&mut app);
         app
     });
@@ -1939,6 +1942,7 @@ fn the_security_notice_wraps_beside_its_buttons_and_lines_up_with_them() {
             app.set_option("language", "en").unwrap();
             app.open_bytes("locked.pdf", None, protected("", "owner", 0b0100)).unwrap();
             app.set_option("panel", "bookmarks").unwrap();
+            app.left_open = true;
             app
         });
         h.run_steps(4);
@@ -2018,6 +2022,7 @@ fn restricted_documents_show_a_notice_and_block_page_changes() {
         app.set_option("language", "en").unwrap();
         app.open_bytes("locked.pdf", None, protected("", "owner", 0b0100)).unwrap(); // opens without a password
         app.set_option("organize", "on").unwrap();
+        app.set_option("panel", "none").unwrap();
         app
     });
     h.run_steps(4);
@@ -2176,7 +2181,7 @@ fn dragging_thumbnails_reorders_pages() {
         h.hover_at(from + (to - from) * (k as f32 / 5.0));
         h.run_steps(1);
     }
-    h.drop_at(to);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
     // Page 1 now sits after page 3.
     let after = page_texts(h.state());
@@ -2535,7 +2540,7 @@ fn check_existing_artwork(name: &'static str, bytes: Vec<u8>) {
         h.hover_at(c + (to - c) * (k as f32 / 4.0));
         h.run_steps(1);
     }
-    h.drop_at(to);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
     let doc = h.state().session.get(id).unwrap();
     assert_eq!(doc.can_undo(), Some("Move image"));
@@ -2621,7 +2626,7 @@ fn drag(h: &mut Harness<'static, PdfCraftApp>, from: egui::Pos2, to: egui::Pos2)
         h.hover_at(from + (to - from) * (k as f32 / 5.0));
         h.run_steps(1);
     }
-    h.drop_at(to);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
 }
 
@@ -3144,7 +3149,7 @@ fn an_ordinary_paragraph_drag_cannot_reuse_an_index_after_an_edit() {
     assert_eq!(after_edit[1].text, "Keep here", "the old target index now names an unrelated paragraph");
     let generation = h.state().session.get(id).unwrap().edit_generation();
     h.run_steps(2);
-    h.drop_at(to);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
     assert!(h.state().views[0].block_drag.is_none());
     assert_eq!(h.state().session.get(id).unwrap().edit_generation(), generation, "the stale release adds no edit");
@@ -3159,7 +3164,7 @@ fn flick(h: &mut Harness<'static, PdfCraftApp>, from: egui::Pos2, to: egui::Pos2
     h.run_steps(1);
     h.hover_at(to);
     h.run_steps(1);
-    h.drop_at(to);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
 }
 
@@ -3317,7 +3322,7 @@ fn dragging_pages_panel_thumbnails_reorders_pages() {
         h.get_all_by_label(label).map(|n| n.rect()).max_by(|a, b| a.left().total_cmp(&b.left())).expect("the thumbnail")
     };
     // Grab page 3 (page 4 is below the window) and drop it above page 1.
-    let (from, to) = (thumb(&h, "Page 3").center(), thumb(&h, "Page 1").center_top() + egui::vec2(0.0, 4.0));
+    let (from, to) = (thumb(&h, "Page 3").center(), thumb(&h, "Page 1").left_top() + egui::vec2(4.0, 4.0));
     drag(&mut h, from, to);
     h.run_steps(4);
     let after = page_texts(h.state());
@@ -4159,4 +4164,203 @@ fn private_new_chinese_keyboard_input_preserves_font_layout_and_saved_pixels() {
     }
     assert_eq!(std::fs::read(path).unwrap(), original);
     println!("verified Chinese keyboard insertion/deletion and save/reopen rendering on {pages} pages");
+}
+
+// 页面框选必须经过真实指针事件，覆盖两个缩略图入口。
+fn marquee_rect(h: &Harness<'static, PdfCraftApp>, label: &str) -> egui::Rect {
+    h.get_all_by_label(label).map(|n| n.rect()).max_by(|a, b| a.left().total_cmp(&b.left())).unwrap()
+}
+
+fn marquee_begin(h: &mut Harness<'static, PdfCraftApp>, from: egui::Pos2, to: egui::Pos2, modifiers: Modifiers) {
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.run_steps(1);
+    for k in 1..=8 {
+        h.hover_at(from + (to - from) * (k as f32 / 8.0));
+        h.run_steps(1);
+    }
+}
+
+fn marquee_release(h: &mut Harness<'static, PdfCraftApp>, at: egui::Pos2) {
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+}
+
+#[test]
+fn page_marquee_selects_in_both_views_without_editing_or_navigating() {
+    for panel in [true, false] {
+        let mut h = if panel { pages_panel(6) } else { organize(6) };
+        let before = page_texts(h.state());
+        let a = marquee_rect(&h, "Page 1");
+        let b = marquee_rect(&h, "Page 2");
+        let from = egui::pos2(a.left() - 3.0, a.top() + 3.0);
+        let to = egui::pos2(b.right() - 3.0, b.bottom() - 3.0);
+        marquee_begin(&mut h, from, to, Modifiers::NONE);
+        marquee_release(&mut h, to);
+        assert_eq!(picked(&h), [0, 1], "panel={panel}, a={a:?}, b={b:?}");
+        assert_eq!(h.state().views[0].current, 0);
+        assert_eq!(page_texts(h.state()), before);
+        assert!(h.state().views[0].panel_drag.is_none());
+        assert!(h.state().views[0].org_drag.is_none());
+        assert!(h.state().views[0].export_drag.is_none());
+        assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+    }
+}
+
+#[test]
+fn page_marquee_modifiers_reverse_and_escape_restore_in_both_views() {
+    for panel in [true, false] {
+        for (modifiers, expected) in [(Modifiers::NONE, vec![0, 1]), (Modifiers::SHIFT, vec![0, 1, 4]), (Modifiers::COMMAND, vec![1, 4])] {
+            let mut h = if panel { pages_panel(6) } else { organize(6) };
+            h.state_mut().views[0].click_page(4, Modifiers::NONE, false);
+            h.state_mut().views[0].selected = [0, 4].into();
+            h.run_steps(2);
+            let a = marquee_rect(&h, "Page 1");
+            let b = marquee_rect(&h, "Page 2");
+            // 右下向左上反向框选，起点位于第二张卡片右侧空白。
+            let from = egui::pos2(b.right() + 3.0, b.bottom() - 3.0);
+            let to = egui::pos2(a.left() + 3.0, a.top() + 3.0);
+            marquee_begin(&mut h, from, to, modifiers);
+            assert_eq!(picked(&h), expected, "panel={panel}, modifiers={modifiers:?}");
+            // 保持鼠标不动，多帧刷新不能反复反转选中状态。
+            h.run_steps(4);
+            assert_eq!(picked(&h), expected);
+            h.key_press_modifiers(modifiers, Key::Escape);
+            h.run_steps(2);
+            assert_eq!(picked(&h), [0, 4]);
+            marquee_release(&mut h, to);
+            assert_eq!(picked(&h), [0, 4]);
+            marquee_begin(&mut h, from, to, modifiers);
+            marquee_release(&mut h, to);
+            assert_eq!(picked(&h), expected);
+        }
+    }
+}
+
+#[test]
+fn page_marquee_scrolls_beyond_visible_rows_in_both_views() {
+    for panel in [true, false] {
+        let mut h = harness(100, move |app| {
+            app.set_option("panel", if panel { "pages" } else { "none" }).unwrap();
+            app.set_option("organize", if panel { "off" } else { "on" }).unwrap();
+        });
+        let a = marquee_rect(&h, "Page 1");
+        let b = marquee_rect(&h, "Page 2");
+        let from = egui::pos2(a.left() - 3.0, a.top() + 3.0);
+        let to = egui::pos2(b.right() - 3.0, 880.0);
+        marquee_begin(&mut h, from, to, Modifiers::NONE);
+        let initial_max = *picked(&h).last().expect("some initial pages");
+        h.run_steps(100);
+        let after = picked(&h);
+        assert!(after.contains(&0), "scrolled-out first page stays selected, panel={panel}");
+        assert!(*after.last().unwrap() > initial_max + 3, "edge scroll extends selection: panel={panel}, initial={initial_max}, after={after:?}");
+        marquee_release(&mut h, to);
+        assert_eq!(h.state().views[0].current, 0);
+        assert!(h.state().views[0].export_drag.is_none());
+        assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+    }
+}
+
+#[test]
+fn page_marquee_outside_release_does_not_move_or_export_and_focus_loss_restores() {
+    for panel in [true, false] {
+        let mut h = if panel { pages_panel(6) } else { organize(6) };
+        let a = marquee_rect(&h, "Page 1");
+        let b = marquee_rect(&h, "Page 2");
+        let from = egui::pos2(a.left() - 3.0, a.top() + 3.0);
+        let to = egui::pos2(b.right() - 3.0, b.bottom() - 3.0);
+        h.state_mut().views[0].selected = [4].into();
+        marquee_begin(&mut h, from, to, Modifiers::NONE);
+        assert_eq!(picked(&h), [0, 1]);
+        h.input_mut().focused = false;
+        h.run_steps(2);
+        assert_eq!(picked(&h), [4]);
+        marquee_release(&mut h, to);
+        h.input_mut().focused = true;
+        h.run_steps(2);
+        marquee_begin(&mut h, from, to, Modifiers::NONE);
+        let outside = egui::pos2(-20.0, to.y);
+        h.hover_at(outside);
+        h.run_steps(1);
+        marquee_release(&mut h, outside);
+        assert!(h.state().views[0].export_drag.is_none());
+        assert!(h.state().views[0].panel_drag.is_none());
+        assert!(h.state().views[0].org_drag.is_none());
+        assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+    }
+}
+
+#[test]
+fn page_marquee_shrinking_and_small_motion_preserve_expected_selection() {
+    for panel in [true, false] {
+        let mut h = if panel { pages_panel(6) } else { organize(6) };
+        h.state_mut().views[0].selected = [4].into();
+        let a = marquee_rect(&h, "Page 1");
+        let b = marquee_rect(&h, "Page 2");
+        let from = egui::pos2(a.left() - 3.0, a.top() + 3.0);
+        let to = egui::pos2(b.right() - 3.0, b.bottom() - 3.0);
+        marquee_begin(&mut h, from, from + egui::vec2(1.0, 1.0), Modifiers::NONE);
+        marquee_release(&mut h, from + egui::vec2(1.0, 1.0));
+        assert_eq!(picked(&h), [4]);
+        marquee_begin(&mut h, from, to, Modifiers::NONE);
+        assert_eq!(picked(&h), [0, 1]);
+        h.hover_at(a.center());
+        h.run_steps(2);
+        assert_eq!(picked(&h), [0], "shrinking removes pages no longer inside");
+        marquee_release(&mut h, a.center());
+        h.get_all_by_label("Page 3").last().unwrap().click_modifiers(Modifiers::SHIFT);
+        h.run_steps(2);
+        assert_eq!(picked(&h), [0, 1, 2], "subsequent Shift-click uses marquee anchor");
+    }
+}
+
+#[test]
+fn page_marquee_preserves_gradual_thumbnail_reorder_in_both_views() {
+    for panel in [true, false] {
+        let mut h = if panel { pages_panel(6) } else { organize(6) };
+        let before = page_texts(h.state());
+        let a = marquee_rect(&h, "Page 1");
+        let c = marquee_rect(&h, "Page 3");
+        let to = a.left_top() + egui::vec2(12.0, 12.0);
+        marquee_begin(&mut h, c.center(), to, Modifiers::NONE);
+        marquee_release(&mut h, to);
+        let mut expected = before.clone();
+        let moved = expected.remove(2);
+        expected.insert(0, moved);
+        assert_eq!(page_texts(h.state()), expected, "panel={panel}");
+        assert_eq!(picked(&h), [0]);
+    }
+}
+
+#[test]
+fn page_marquee_uses_press_position_when_fast_motion_arrives_in_same_frame() {
+    for panel in [true, false] {
+        let mut h = if panel { pages_panel(6) } else { organize(6) };
+        let a = marquee_rect(&h, "Page 1");
+        let b = marquee_rect(&h, "Page 2");
+        let from = egui::pos2(a.left() - 3.0, a.top() + 3.0);
+        let to = egui::pos2(b.right() - 3.0, b.bottom() - 3.0);
+        h.hover_at(from);
+        h.run_steps(1);
+        // 高帧间隔或快速移动时，按下和移动会同时进入一帧。
+        h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.hover_at(to);
+        h.run_steps(1);
+        marquee_release(&mut h, to);
+        assert_eq!(picked(&h), [0, 1], "panel={panel}");
+        assert_eq!(h.state().views[0].current, 0);
+        assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+    }
+}
+
+#[test]
+fn custom_startup_shows_pages_and_hides_tools() {
+    let mut app = PdfCraftApp::new();
+    app.open_bytes("startup.pdf", None, fixture(3)).unwrap();
+    assert!(!app.left_open);
+    assert_eq!(app.right, Some(pdfcraft_ui_egui::RightPanel::Pages));
+    assert_eq!(app.views[0].current, 0);
+    assert!(app.views[0].selected.is_empty());
+    assert!(!app.session.get(app.views[0].id).unwrap().dirty);
 }

@@ -1,14 +1,25 @@
-<p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
-</p>
+<h1 align="center">PdfCraft macOS custom build</h1>
 
+## macOS local.8
 
-<h1 align="center">PdfCraft</h1>
+This branch preserves the macOS `0.8.0-local.8` customizations on the upstream `0.8.0` release:
+
+- Each PDF opens in its own native window. Reopening the same file activates its existing window and preserves unsaved edits.
+- Navigation, selection, control input and recovery snapshots are isolated between windows.
+- Documents open with the Pages panel visible. Small thumbnails reflow into columns, and the list follows the current reading page.
+- Dragging selected pages to Finder exports a PDF copy while keeping the source pages in place.
+- Dragging from empty space selects a rectangle of pages in the Pages panel and Organize view. Shift adds, Command toggles, Escape restores the previous selection, and the list scrolls at its edges.
+- Opaque image minification can use smoothing with `PDFCRAFT_SMOOTH_IMAGES=1`.
+
+Build the desktop app with the Rust toolchain specified by this repository:
+
+```sh
+PDFCRAFT_BUILD_LABEL=local.8 CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo build --release -j 2 -p pdfcraft --bin pdfcraft
+PDFCRAFT_SMOOTH_IMAGES=1 target/release/pdfcraft
+```
+
+See [Get started](#get-started) for platform prerequisites and optional fonts. The overview below describes the upstream project.
+
 
 <p align="center">
   <b>The PDF workbench; an open-source, clean-room reimplementation of Adobe Acrobat, rebuilt in pure Rust.</b><br>
@@ -23,16 +34,6 @@
   <img alt="No account, no telemetry" src="https://img.shields.io/badge/no%20account-no%20telemetry-0a7563">
 </p>
 
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<p align="center">
-  <a href="https://getartcraft.com/apps/pdfcraft"><b>PdfCraft on getartcraft.com</b></a> ·
-  <a href="https://getartcraft.com/">ArtCraft</a> ·
-  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
-</p>
-
 <br>
 
 <p align="center">
@@ -40,10 +41,6 @@
   <br>
   <sub>The PdfCraft Showcase, a 13-page specimen PDF, open with the All tools panel and threaded comments.</sub>
 </p>
-
-> [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Digital, generative, music,
-> games &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#highlights">Highlights</a> ·
@@ -64,15 +61,9 @@
 
 ---
 
-## Community
+## Upstream project
 
-PdfCraft is part of [ArtCraft](https://getartcraft.com). Come say hello, get help and follow development:
-
-- **Discord: [discord.gg/artcraft](https://discord.gg/artcraft)**. This is the fastest way to get help and share feedback. The app has a Discord button in its title bar.
-- **Web page:** [getartcraft.com/apps/pdfcraft](https://getartcraft.com/apps/pdfcraft)
-- **Source:** [github.com/storytold/pdfcraft](https://github.com/storytold/pdfcraft)
-
-The ArtCraft name and logos in `docs/brand/` are trademarks of the ArtCraft Team and are not open source. They may be used only unmodified, and only as part of PdfCraft (see `docs/brand/LICENSE-brand.txt`). Forks and modified versions must remove them.
+Based on [storytold/pdfcraft](https://github.com/storytold/pdfcraft). Original copyright and third-party notices are preserved in [NOTICE](NOTICE) and [ATTRIBUTION.md](ATTRIBUTION.md).
 
 ## Highlights
 
@@ -248,12 +239,10 @@ Press <kbd>⌘K</kbd> to search every tool and command, or browse the **All tool
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/pdfcraft-palette.png" alt="The command palette searching for 'page', listing Page grid, Page labels, Rotate pages, Insert pages, Delete pages, Extract pages and more, each with the tool it belongs to"></td>
-<td width="50%"><img src="docs/images/pdfcraft-tools.png" alt="The Welcome to PdfCraft home screen with recommended tools, a recent file, a privacy note, and the full tool catalogue in the side panel"></td>
+<td width="100%"><img src="docs/images/pdfcraft-palette.png" alt="The command palette searching for 'page', listing Page grid, Page labels, Rotate pages, Insert pages, Delete pages, Extract pages and more, each with the tool it belongs to"></td>
 </tr>
 <tr>
 <td align="center"><sub>The <kbd>⌘K</kbd> command palette</sub></td>
-<td align="center"><sub>The home screen and the All tools catalogue</sub></td>
 </tr>
 </table>
 
@@ -551,16 +540,10 @@ with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md). Release
 the Japanese fonts of [craft-fonts](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md)
 (SIL Open Font License 1.1).
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and PdfCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
-
 <sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. PdfCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <sub>Upstream project by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
 
 Tools and Inspector panels can be dragged into tab groups, split beside the PDF, or floated within the app window. Read and full-screen modes keep their existing focused document view. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.

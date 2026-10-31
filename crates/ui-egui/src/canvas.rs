@@ -389,7 +389,7 @@ pub struct DocView {
     pub selected: BTreeSet<usize>,
     organize_range: crate::page_selection_ui::PageSelectionInput,
     /// Anchor for ⇧-click range selection in the organize grid.
-    select_anchor: Option<usize>,
+    pub(crate) select_anchor: Option<usize>,
     /// An edit requested by the view (organize toolbar, keys), applied by the app this frame.
     pub pending_edit: Option<Edit>,
     /// Edit text: the lines per page (with the document generation they were read at), and the
@@ -433,6 +433,8 @@ pub struct DocView {
     pub org_drag: Option<Vec<usize>>,
     /// Pages panel: the pages being dragged to a new place.
     pub panel_drag: Option<Vec<usize>>,
+    pub(crate) page_marquee: Option<crate::page_marquee::PageMarquee>,
+    pub export_drag: Option<Vec<usize>>,
     /// Marquee Zoom / Snapshot: the rectangle being dragged (page, start), and a finished one.
     pub marquee: Option<(usize, Pos2)>,
     pub marquee_done: Option<crate::zoom_snap::Marquee>,
@@ -672,6 +674,8 @@ impl DocView {
             sign: Default::default(),
             org_drag: None,
             panel_drag: None,
+            page_marquee: None,
+            export_drag: None,
             marquee: None,
             marquee_done: None,
             fill_text: None,
@@ -703,6 +707,8 @@ impl DocView {
         self.flash = None;
         // A thumbnail drag holds page indexes from before the change.
         self.panel_drag = None;
+        self.export_drag = None;
+        self.page_marquee = None;
     }
 
     /// The document was replaced by a newer version of its file (#431). The reader's place
@@ -3037,7 +3043,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         }
         if view.continuous {
             view.current = current;
-            if !ui.memory(|m| m.has_focus(egui::Id::new("page-input"))) {
+            let page_input_id = crate::window_id(ui.ctx(), "page-input");
+            if !ui.memory(|m| m.has_focus(page_input_id)) {
                 view.page_input = (current + 1).to_string();
             }
         }
@@ -3116,7 +3123,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 && let Some((page, at)) = view.comments.context_at
             {
                 // The page's content is parsed once per right-click, not on every frame the menu is open.
-                let key = egui::Id::new("copy-image-under-menu");
+                let key = crate::window_id(ui.ctx(), ("copy-image-under-menu", view.id));
                 let cached = ui.data(|d| d.get_temp::<(usize, [f64; 2], Option<usize>)>(key)).filter(|c| c.0 == page && c.1 == at);
                 let hit = match cached {
                     Some(c) => c.2,
@@ -3250,12 +3257,15 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     view.frame_visible = visible_now.iter().copied().collect();
 
     if let Some((pos, text)) = hover_text {
-        egui::Area::new(egui::Id::new("canvas-hover")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 16.0)).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_max_width(320.0);
-                ui.label(text);
-            });
-        });
+        egui::Area::new(crate::window_id(ui.ctx(), "canvas-hover")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 16.0)).show(
+            ui.ctx(),
+            |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    ui.label(text);
+                });
+            },
+        );
     }
     find_bar(view, info.pages.len(), avail, ui, &t);
     if tool == QuickTool::EnhanceCamera {
@@ -3459,26 +3469,29 @@ fn selection_actions(ui: &mut egui::Ui, viewport: Rect, view: &mut DocView, info
     let x = rect.left().clamp(viewport.left() + 8.0, (viewport.right() - 520.0).max(viewport.left() + 8.0));
     let y = if rect.bottom() + 48.0 < viewport.bottom() { rect.bottom() + 6.0 } else { (rect.top() - 44.0).max(viewport.top() + 6.0) };
     let mut chosen = None;
-    egui::Area::new(egui::Id::new(("text-selection-actions", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (label, action) in [
-                    (tl!("Add comment"), SelectionAction::Note),
-                    (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
-                    (tl!("Underline"), SelectionAction::Markup(comments::CommentTool::Underline)),
-                    (tl!("Strikethrough"), SelectionAction::Markup(comments::CommentTool::StrikeOut)),
-                    (tl!("Replace text"), SelectionAction::Replace),
-                ] {
-                    if ui.add_enabled(can_comment, egui::Button::new(label)).clicked() {
-                        chosen = Some(action);
+    egui::Area::new(crate::window_id(ui.ctx(), ("text-selection-actions", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).show(
+        ui.ctx(),
+        |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (label, action) in [
+                        (tl!("Add comment"), SelectionAction::Note),
+                        (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
+                        (tl!("Underline"), SelectionAction::Markup(comments::CommentTool::Underline)),
+                        (tl!("Strikethrough"), SelectionAction::Markup(comments::CommentTool::StrikeOut)),
+                        (tl!("Replace text"), SelectionAction::Replace),
+                    ] {
+                        if ui.add_enabled(can_comment, egui::Button::new(label)).clicked() {
+                            chosen = Some(action);
+                        }
                     }
-                }
-                if ui.button(tl!("Copy")).clicked() {
-                    chosen = Some(SelectionAction::Copy);
-                }
+                    if ui.button(tl!("Copy")).clicked() {
+                        chosen = Some(SelectionAction::Copy);
+                    }
+                });
             });
-        });
-    });
+        },
+    );
     let Some(action) = chosen else { return };
     if let SelectionAction::Copy = action {
         ui.ctx().copy_text(selected);
@@ -3616,7 +3629,7 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
     let mut close = false;
     let mut step: Option<bool> = None;
     let searched = view.texts.len() + view.text_failed.len();
-    egui::Area::new(egui::Id::new("find-bar"))
+    egui::Area::new(crate::window_id(ui.ctx(), "find-bar"))
         .order(egui::Order::Middle)
         .pivot(Align2::RIGHT_TOP)
         .fixed_pos(area.right_top() + vec2(-18.0, 12.0))
@@ -3631,7 +3644,7 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
                     ui.horizontal(|ui| {
                         ui.add(icons::image("search", 16.0, t.text_muted));
                         let edit = egui::TextEdit::singleline(&mut find.query)
-                            .id(egui::Id::new("find-input"))
+                            .id(crate::window_id(ui.ctx(), "find-input"))
                             .hint_text(tl!("Find text"))
                             .desired_width(220.0)
                             .frame(egui::Frame::NONE);
@@ -3891,7 +3904,7 @@ fn notice_bar(ui: &mut egui::Ui, t: &Tokens, icon: &str, icon_color: Color32, te
 fn quick_bar(app: &mut PdfCraftApp, area: Rect, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let pos = area.left_top() + vec2(14.0, 14.0);
-    egui::Area::new(egui::Id::new("quick-bar")).order(egui::Order::Middle).fixed_pos(pos).show(ui.ctx(), |ui| {
+    egui::Area::new(crate::window_id(ui.ctx(), "quick-bar")).order(egui::Order::Middle).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::NONE
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.border))
@@ -4189,7 +4202,7 @@ fn organize_toolbar(view: &mut DocView, info: &DocInfo, editable: bool, dirty: b
     });
     // Keys act on the selection unless a text field or a dialog has them (Delete under
     // Preferences deleted the selected pages).
-    if editable && unobstructed && !ui.ctx().egui_wants_keyboard_input() {
+    if editable && unobstructed && view.page_marquee.is_none() && !ui.ctx().egui_wants_keyboard_input() {
         use egui::{Key, Modifiers};
         let (del, esc) = ui.input_mut(|i| {
             (
@@ -4271,6 +4284,8 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
         if auto_delta != Vec2::ZERO {
             ui.scroll_with_delta_animation(auto_delta, egui::style::ScrollAnimation::none());
         }
+        let background = crate::page_marquee::background(ui, crate::page_marquee::Surface::Organize);
+        let mut exclusions = Vec::new();
         ui.add_space(20.0);
         let cols = ((ui.available_width() - 40.0) / cell.x).floor().max(1.0) as usize;
         let rows = info.pages.len().div_ceil(cols);
@@ -4283,13 +4298,15 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
                 let Some(p) = info.pages.get(i) else { break };
                 let c = Rect::from_min_size(pos2(row_rect.left() + left + col as f32 * cell.x, row_rect.top()), cell);
                 view.need_thumbnail(i, c.intersects(ui.clip_rect()));
-                let resp = ui.interact(c, ui.id().with(("org", i)), if editable { Sense::click_and_drag() } else { Sense::click() });
+                let card = crate::page_marquee::grid_card(grid, cell, left, cols, i);
+                exclusions.push(card);
+                let resp = ui.interact(card, ui.id().with(("org", i)), if editable { Sense::click_and_drag() } else { Sense::click() });
                 cells.push((i, c));
                 if let Some((_, above)) = anchor.filter(|(page, _)| *page == i) {
                     ui.scroll_to_rect_animation(c.translate(vec2(0.0, -above)), Some(egui::Align::Min), egui::style::ScrollAnimation::none());
                 }
                 // Drag pages to move them (the selection, or the page grabbed).
-                if resp.drag_started() {
+                if view.page_marquee.is_none() && resp.drag_started_by(egui::PointerButton::Primary) {
                     if !view.selected.contains(&i) {
                         view.selected = [i].into();
                         view.select_anchor = Some(i);
@@ -4386,7 +4403,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
                         },
                     );
                 }
-                if resp.clicked() {
+                if view.page_marquee.is_none() && resp.clicked() {
                     let m = ui.input(|i| i.modifiers);
                     view.click_page(i, m, false);
                     view.current = i;
@@ -4425,7 +4442,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
             }
         }
         // Between pages (and at both ends): insert files right there.
-        if editable && !middle_gesture && view.org_drag.is_none() {
+        if editable && !middle_gesture && view.org_drag.is_none() && view.page_marquee.is_none() {
             let mid = |r: &Rect| r.top() + 16.0 + (cell.y - 88.0) / 2.0;
             for (i, c) in &cells {
                 let label = info
@@ -4433,9 +4450,15 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
                     .get(*i)
                     .map(|p| crate::i18n::fmt(tl!("Insert a file before page {label}"), &[("label", &p.label)]))
                     .unwrap_or_default();
+                exclusions.push(Rect::from_center_size(pos2(c.left(), mid(c)), Vec2::splat(22.0)));
                 if gap_button(ui, *i, pos2(c.left(), mid(c)), cell.y - 88.0, label, t) {
                     view.pending_action = Some(ViewAction::InsertFromFileAt(*i));
                 }
+            }
+            if let Some((i, c)) = cells.last()
+                && i + 1 == info.pages.len()
+            {
+                exclusions.push(Rect::from_center_size(pos2(c.right(), mid(c)), Vec2::splat(22.0)));
             }
             if let Some((i, c)) = cells.last()
                 && i + 1 == info.pages.len()
@@ -4444,8 +4467,32 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
                 view.pending_action = Some(ViewAction::InsertFromFileAt(i + 1));
             }
         }
-        // While dragging: the gap the pages would go to, drawn as a bar.
-        if let (Some(pages), Some(p)) = (view.org_drag.clone(), ui.input(|i| i.pointer.hover_pos())) {
+        crate::page_marquee::update(
+            ui,
+            view,
+            crate::page_marquee::Surface::Organize,
+            grid.min,
+            &background,
+            (0..info.pages.len()).map(|i| (i, crate::page_marquee::grid_card(grid, cell, left, cols, i))),
+            &exclusions,
+            unobstructed && !middle_gesture,
+            t,
+        );
+        // Outside the organize grid, hand a copy to the system instead of moving a page.
+        let pointer = ui.input(|i| i.pointer.hover_pos()).or_else(|| crate::drag_pointer::in_window(ui.ctx()));
+        if view.org_drag.is_some() {
+            ui.ctx().request_repaint();
+            #[cfg(target_os = "macos")]
+            if !drop && ui.input(|i| i.pointer.primary_down()) && pointer.is_some_and(|p| !viewport.contains(p)) {
+                view.export_drag = view.org_drag.take();
+                ui.ctx().stop_dragging();
+            }
+            if !drop && !ui.input(|i| i.pointer.primary_down()) {
+                view.org_drag = None;
+            }
+        }
+        // While dragging inside the grid: the gap the pages would go to, drawn as a bar.
+        if let (Some(pages), Some(p)) = (view.org_drag.clone(), pointer.filter(|p| viewport.contains(*p))) {
             if let Some(gap) = drop_gap(&cells, p) {
                 let x = match cells.iter().find(|(i, _)| *i == gap) {
                     Some((_, r)) => r.left() + 3.0,
@@ -4509,6 +4556,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
         let before = view.grid_zoom;
         view.set_grid_zoom(zoom);
         if view.grid_zoom != before {
+            crate::page_marquee::cancel(view);
             // Keep the page under the pointer (or else the first one in view) where it is.
             let under = pointer.and_then(|p| cells.iter().find(|(_, r)| r.contains(p)));
             let anchor = under.or_else(|| cells.iter().find(|(_, r)| r.bottom() > viewport.top()));
