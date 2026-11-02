@@ -15,8 +15,11 @@ use std::path::{Path, PathBuf};
 pub use pdfcraft_fonts::helvetica_width;
 
 /// The model files, as named in ATTRIBUTION.toml.
-pub const DETECTION_MODEL: &str = "text-detection.rten";
-pub const RECOGNITION_MODEL: &str = "text-recognition.rten";
+pub const DETECTION_MODEL: &str = "text-detection.onnx";
+pub const RECOGNITION_MODEL: &str = "text-recognition.onnx";
+
+const LEGACY_DETECTION_MODEL: &str = "text-detection.rten";
+const LEGACY_RECOGNITION_MODEL: &str = "text-recognition.rten";
 
 /// The recognition model's alphabet, as it was trained (ocrs-models' `DEFAULT_ALPHABET`): its
 /// output classes follow this order. The ocrs crate's own copy has an `E` where the training had
@@ -48,10 +51,13 @@ pub struct Models {
 }
 
 impl Models {
-    /// The models in `dir`, if both files are there.
+    /// Prefer a complete current ONNX pair; retain a complete legacy RTen pair for existing
+    /// installations. A partial pair is never combined with a model of the other format.
     pub fn in_dir(dir: &Path) -> Option<Models> {
-        let m = Models { detection: dir.join(DETECTION_MODEL), recognition: dir.join(RECOGNITION_MODEL) };
-        (m.detection.is_file() && m.recognition.is_file()).then_some(m)
+        [(DETECTION_MODEL, RECOGNITION_MODEL), (LEGACY_DETECTION_MODEL, LEGACY_RECOGNITION_MODEL)]
+            .into_iter()
+            .map(|(detection, recognition)| Models { detection: dir.join(detection), recognition: dir.join(recognition) })
+            .find(|models| models.detection.is_file() && models.recognition.is_file())
     }
 
     /// Look for the models: `$PDFCRAFT_MODELS`, then where the release packages install them
@@ -328,6 +334,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn model_discovery_prefers_complete_onnx_and_keeps_legacy_pairs() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-pair-preference-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in [LEGACY_DETECTION_MODEL, LEGACY_RECOGNITION_MODEL] {
+            std::fs::write(dir.join(file), b"legacy-model").unwrap();
+        }
+        let legacy = Models::in_dir(&dir).unwrap();
+        assert_eq!(legacy.detection, dir.join(LEGACY_DETECTION_MODEL));
+        assert_eq!(legacy.recognition, dir.join(LEGACY_RECOGNITION_MODEL));
+        std::fs::write(dir.join(DETECTION_MODEL), b"onnx-model").unwrap();
+        assert_eq!(Models::in_dir(&dir), Some(legacy), "an incomplete new pair must not replace either old model");
+        std::fs::write(dir.join(RECOGNITION_MODEL), b"onnx-model").unwrap();
+        let current = Models::in_dir(&dir).unwrap();
+        assert_eq!(current.detection, dir.join(DETECTION_MODEL));
+        assert_eq!(current.recognition, dir.join(RECOGNITION_MODEL));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn model_discovery_rejects_missing_mixed_and_directory_entries() {
+        for (case, detection, recognition) in
+            [("new-old", DETECTION_MODEL, LEGACY_RECOGNITION_MODEL), ("old-new", LEGACY_DETECTION_MODEL, RECOGNITION_MODEL)]
+        {
+            let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-pair-{case}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            assert_eq!(Models::in_dir(&dir), None);
+            std::fs::write(dir.join(detection), b"model").unwrap();
+            assert_eq!(Models::in_dir(&dir), None, "a single model is not a pair");
+            std::fs::write(dir.join(recognition), b"model").unwrap();
+            assert_eq!(Models::in_dir(&dir), None, "formats are never mixed");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-pair-directory-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(RECOGNITION_MODEL)).unwrap();
+        std::fs::write(dir.join(DETECTION_MODEL), b"model").unwrap();
+        assert_eq!(Models::in_dir(&dir), None, "a directory is not a model file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// The message tells end users what to do; release builds have no cargo.
     #[test]
     fn the_alphabet_is_the_trained_one() {
@@ -355,6 +401,7 @@ mod tests {
         let (w, h, px) = test_image::hello();
         let lines = ocr.recognize(&px, w, h).unwrap();
         let text: Vec<String> = lines.iter().map(Line::text).collect();
+        eprintln!("OCR recognized: {}", text.join(" | "));
         assert!(text.iter().any(|t| t.contains("HELL") && t.contains("WOR")), "{text:?}");
         let word = lines.iter().flat_map(|l| &l.words).find(|w| w.text.contains("HELL")).unwrap();
         assert!(word.rect[0] >= 10.0 && word.rect[0] < 60.0, "{word:?}");

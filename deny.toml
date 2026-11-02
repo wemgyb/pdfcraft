@@ -48,6 +48,17 @@ ignore = [
     # winprint's fmt-derive (craft-print's Windows spooler), so it runs at compile time on Windows
     # and is not in the binary.
     { id = "RUSTSEC-2024-0370", reason = "compile-time proc macro of winprint's fmt-derive (craft-print Windows printing, #1107)" },
+    # Checked 2026-11-02: these are INFO Unmaintained notices for crates folded into zbus 6,
+    # not vulnerability advisories. The compatible Linux accessibility stack remains on zbus 5:
+    # accesskit_unix 0.21.1 -> atspi 0.29 / zbus 5.19, and even accesskit_unix 0.24.1 still
+    # requires zbus ^5.19. atspi 0.30 also retains zvariant 5 / zbus_names 4.
+    # Remove each exception when AccessKit/AT-SPI support a compatible migration to zbus 6.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0370.html
+    { id = "RUSTSEC-2026-0370", reason = "INFO: zvariant merged into zbus 6; AccessKit/AT-SPI still require zvariant 5. Remove when that accessibility stack supports zbus 6." },
+    # https://rustsec.org/advisories/RUSTSEC-2026-0371.html
+    { id = "RUSTSEC-2026-0371", reason = "INFO: zbus_names merged into zbus 6; AccessKit/AT-SPI still require zbus_names 4. Remove when that accessibility stack supports zbus 6." },
+    # https://rustsec.org/advisories/RUSTSEC-2026-0372.html
+    { id = "RUSTSEC-2026-0372", reason = "INFO: zvariant_derive merged into zbus 6; AccessKit/AT-SPI still require zvariant 5 derives. Remove when that accessibility stack supports zbus 6." },
 ]
 
 # egui's default UI fonts (Ubuntu-Light, Hack, emoji-icon-font): font licences on the AGENTS.md
