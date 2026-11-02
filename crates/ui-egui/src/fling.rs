@@ -59,6 +59,12 @@ impl Fling {
         self.stalled = 0;
     }
 
+    /// A different interaction consumed this gesture, so its later lift must not restart it.
+    pub(crate) fn discard_gesture(&mut self) {
+        self.stop();
+        self.samples.clear();
+    }
+
     /// Reads one pass's wheel events, at time `now`. Any wheel input stops a glide; a touchpad
     /// gesture's `End` may start one. `glide` is false where the view must not glide this pass
     /// (animations off, single-page paging, a zoom, a dialog).

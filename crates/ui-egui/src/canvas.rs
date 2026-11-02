@@ -2419,7 +2419,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // Paging owns the vertical axis in single-page view; leave it to the pager.
     // The rest of a gesture that turned the page is swallowed too, or it would pan the new page
     // away from the edge it was shown at.
-    if single_paging || (!view.continuous && view.wheel.gesture_turned()) {
+    let pager_owns_gesture = single_paging || (!view.continuous && view.wheel.gesture_turned());
+    if pager_owns_gesture {
         precise_scroll.y = 0.0;
     }
     if now < view.precise_scroll_until {
@@ -2432,9 +2433,15 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // dialog has the input, or animations are off; any click, key, zoom or other scrolling ends it.
     // Asked of the preference, not of egui's animation time, which test harnesses zero.
     let animates = app.animation_effects.animates(app.motion.reduced);
-    let may_glide = !single_paging && !middle_gesture && navigation_enabled && unobstructed && animates;
+    let may_glide = !pager_owns_gesture && !middle_gesture && navigation_enabled && unobstructed && animates;
     let over_page = ui.rect_contains_pointer(avail);
-    ui.input(|i| view.fling.read(&i.events, now, may_glide && over_page));
+    if pager_owns_gesture {
+        // The edge pager consumes a swipe even when the page is too tall to fit. Forget the
+        // raw samples too, or its End would restart inertia after precise_scroll was swallowed.
+        view.fling.discard_gesture();
+    } else {
+        ui.input(|i| view.fling.read(&i.events, now, may_glide && over_page));
+    }
     let interrupted = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
     if !may_glide || interrupted || key_scroll != 0.0 || auto_delta != Vec2::ZERO || zoom_delta != 1.0 {
         view.fling.stop();
@@ -5185,6 +5192,107 @@ trailer << /Root 1 0 R >>
         );
         v.find = Some(Find { matches: vec![(3, 0..1), (3, 0..1), (1, 0..1)], current: Some(2), ..Default::default() });
         v
+    }
+
+    fn momentum_harness(layout: &'static str, client_momentum: bool) -> egui_kittest::Harness<'static, PdfCraftApp> {
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| {
+            let mut app = PdfCraftApp::new();
+            let bytes = app.session.create_blank(300.0, 400.0, 3).unwrap();
+            app.open_bytes("swipe.pdf", None, bytes.as_ref().clone()).unwrap();
+            for (key, value) in
+                [("language", "en"), ("left", "closed"), ("panel", "none"), ("layout", layout), ("zoom", "200"), ("animation_effects", "on")]
+            {
+                app.set_option(key, value).unwrap();
+            }
+            app.views[0].fling = crate::fling::Fling::new(client_momentum);
+            app
+        });
+        h.run_steps(8);
+        h.hover_at(h.state().views[0].viewport_rect().center());
+        h.run_steps(4);
+        h
+    }
+
+    #[test]
+    fn a_single_page_turn_consumes_client_momentum_after_touch_release() {
+        use egui::{Event, Modifiers, MouseWheelUnit, TouchPhase};
+        use egui_kittest::Harness;
+        // Exercise both native-momentum and client-momentum configurations on every host.
+        // macOS normally disables the client integrator, which used to hide this regression.
+        for client_momentum in [false, true] {
+            let mut h = momentum_harness("single", client_momentum);
+            let send = |h: &mut Harness<'static, PdfCraftApp>, phase, dy| {
+                h.event(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: vec2(0.0, dy), phase, modifiers: Modifiers::NONE });
+                h.step();
+            };
+            send(&mut h, TouchPhase::Start, 0.0);
+            for _ in 0..120 {
+                send(&mut h, TouchPhase::Move, -40.0);
+            }
+            send(&mut h, TouchPhase::End, 0.0);
+            h.run_steps(30);
+            assert_eq!(h.state().views[0].current, 0, "panning to an edge cannot also turn the page");
+            send(&mut h, TouchPhase::Start, 0.0);
+            for _ in 0..6 {
+                send(&mut h, TouchPhase::Move, -25.0);
+            }
+            let view = &h.state().views[0];
+            eprintln!(
+                "before lift: client={client_momentum}, page={}, turned={}, gliding={}, scroll={:?}",
+                view.current,
+                view.wheel.gesture_turned(),
+                view.fling.gliding(),
+                view.last_scroll
+            );
+            send(&mut h, TouchPhase::End, 0.0);
+            let view = &h.state().views[0];
+            eprintln!(
+                "after lift: client={client_momentum}, page={}, turned={}, gliding={}, scroll={:?}",
+                view.current,
+                view.wheel.gesture_turned(),
+                view.fling.gliding(),
+                view.last_scroll
+            );
+            h.run_steps(30);
+            let view = &h.state().views[0];
+            assert_eq!(view.current, 1, "a fresh swipe turns exactly one page");
+            let top = view.page_screen_rect(1).unwrap().min.y;
+            eprintln!(
+                "settled: client={client_momentum}, top={top}, viewport={:?}, gliding={}, scroll={:?}",
+                view.viewport_rect(),
+                view.fling.gliding(),
+                view.last_scroll
+            );
+            assert!(
+                top >= view.viewport_rect().min.y,
+                "page 2 must remain at its top after the consumed swipe: client={client_momentum}, top={top}, viewport={:?}",
+                view.viewport_rect()
+            );
+            if client_momentum && let Ok(path) = std::env::var("PDFCRAFT_SWIPE_SHOT") {
+                h.render().unwrap().save(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn continuous_view_keeps_client_momentum_after_touch_release() {
+        use egui::{Event, Modifiers, MouseWheelUnit, TouchPhase};
+        let mut h = momentum_harness("continuous", true);
+        let mut send = |phase, dy| {
+            h.event(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: vec2(0.0, dy), phase, modifiers: Modifiers::NONE });
+            h.step();
+        };
+        send(TouchPhase::Start, 0.0);
+        for _ in 0..6 {
+            send(TouchPhase::Move, -25.0);
+        }
+        send(TouchPhase::End, 0.0);
+        assert!(h.state().views[0].fling.gliding(), "an ordinary continuous-view swipe still starts inertia");
+        let before = h.state().views[0].last_scroll.y;
+        h.run_steps(10);
+        assert!(h.state().views[0].last_scroll.y - before > 100.0, "the page keeps moving after the fingers lift");
+        h.run_steps(180);
+        assert!(!h.state().views[0].fling.gliding(), "ordinary inertia still decays to a stop");
     }
 
     #[test]
