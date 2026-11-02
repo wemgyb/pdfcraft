@@ -1775,14 +1775,32 @@ fn files_dropped_on_the_pages_panel_are_inserted_there() {
 #[test]
 fn files_dropped_beside_the_pages_panel_still_open_as_documents() {
     let mut h = harness(2, |app| app.right = Some(pdfcraft_ui_egui::RightPanel::Pages));
+    let original = h.state().views[0].id;
+    let original_bytes = h.state().session.get(original).unwrap().bytes.clone();
+    let dropped_bytes = fixture(1);
     // Over the page view, not the panel.
     let thumb = panel_thumb_rect(&h, "Page 1");
-    h.hover_at(egui::pos2(thumb.left() - 300.0, thumb.center().y));
+    let at = egui::pos2(thumb.left() - 300.0, thumb.center().y);
+    assert!(h.state().views[0].viewport_rect().contains(at), "the drop must target the document view");
+    h.hover_at(at);
     h.run_steps(2);
-    drop_files(&mut h, vec![Dropped("other.pdf", fixture(1))]);
-    h.run_steps(3);
+    drop_files(&mut h, vec![Dropped("other.pdf", dropped_bytes.clone())]);
+    // Native file preparation completes between frames, not after a fixed number of them.
+    support::wait_until(&mut h, "document dropped beside Pages panel", |app| app.views.len() == 2 && app.password_prompt.is_none());
     assert_eq!(h.state().views.len(), 2);
     assert_eq!(texts_of(h.state(), 0), ["Page 1", "Page 2"]);
+    assert!(h.state().views.iter().any(|view| view.id == original));
+    let original_doc = h.state().session.get(original).unwrap();
+    assert_eq!(original_doc.info.pages.len(), 2, "the dropped page must not be inserted into the original PDF");
+    assert_eq!(original_doc.bytes, original_bytes);
+    assert!(!original_doc.dirty);
+    let (_, opened) = h.state().active_ids().unwrap();
+    assert_ne!(opened, original);
+    let opened_doc = h.state().session.get(opened).unwrap();
+    assert_eq!(opened_doc.name, "other.pdf");
+    assert_eq!(opened_doc.info.pages.len(), 1);
+    assert_eq!(opened_doc.bytes.as_slice(), dropped_bytes.as_slice());
+    assert!(!opened_doc.dirty);
 }
 
 fn grid_zoom(h: &Harness<'static, PdfCraftApp>) -> f32 {
