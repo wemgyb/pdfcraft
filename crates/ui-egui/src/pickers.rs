@@ -341,6 +341,7 @@ mod tests {
             path: None,
             stamp: None,
             activate: true,
+            comparison_subject: None,
             after_open: None,
             recovered: None,
             then: None,

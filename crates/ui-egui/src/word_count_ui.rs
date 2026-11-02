@@ -194,7 +194,8 @@ mod tests {
             h.run_steps(1);
             wait(&mut h);
             assert_eq!(h.state().word_count_draft.result.as_ref().unwrap().as_ref().unwrap().total.words, 3);
-            h.get_by_label("Close").click();
+            let card = h.ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new("dialog").with("card"))).unwrap();
+            h.get_all_by_label("Close").find(|node| card.contains(node.rect().center())).expect("word-count dialog close button").click();
             h.run_steps(2);
             assert!(h.state().dialog.is_none());
             assert!(h.state().word_count_draft.result.is_none());

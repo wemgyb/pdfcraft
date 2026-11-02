@@ -16,6 +16,8 @@ pub enum FilePurpose {
         page: usize,
     },
     Combine,
+    /// Load an older PDF as a comparison copy inside the active document window.
+    Compare,
     InsertPages,
     ReplacePages,
     /// Scan & OCR ▸ Recognize text in multiple files.
@@ -93,9 +95,9 @@ pub struct ReplaceDraft {
 }
 
 impl FilePurpose {
-    /// Insert and Replace edit the active document, at its selection.
+    /// Keep editing and comparison picks attached to the subject that opened the picker.
     pub(crate) fn edits_active_document(self) -> bool {
-        matches!(self, Self::InsertPages | Self::ReplacePages | Self::TextFont { .. })
+        matches!(self, Self::InsertPages | Self::ReplacePages | Self::TextFont { .. } | Self::Compare)
     }
 }
 
@@ -477,6 +479,13 @@ impl PdfCraftApp {
                     ed.fonts = crate::edit_text_ui::install_source_fonts(ctx, doc, page);
                 }
             }
+            FilePurpose::Compare => {
+                if let Some((name, bytes)) = files.into_iter().next()
+                    && let Err(error) = self.open_comparison_copy(&name, bytes)
+                {
+                    self.notify_error(error);
+                }
+            }
             FilePurpose::Combine => self.stage_combine(files),
             FilePurpose::InsertPages => self.insert_files(files),
             FilePurpose::ReplacePages => {
@@ -785,15 +794,8 @@ impl PdfCraftApp {
     }
 
     pub(crate) fn open_created(&mut self, name: &str, bytes: Arc<Vec<u8>>, message: &str) {
-        match self.session.open_new(name, bytes) {
-            Ok(id) => {
-                // The reading-colours preference is app-wide: the newly created document starts with it.
-                self.session.set_reading_colors(id, self.reading_colors);
-                let Some(doc) = self.session.get(id) else { return };
-                self.views.push(crate::DocView::new(id, &doc.info, self.view_defaults));
-                self.active = Some(self.views.len() - 1);
-                self.notify_tr(message);
-            }
+        match self.open_created_bytes(name, Ok(bytes)) {
+            Ok(()) => self.notify_tr(message),
             Err(e) => self.notify_fmt("Couldn't open the result: {e}", &[("e", &e.to_string())]),
         }
     }

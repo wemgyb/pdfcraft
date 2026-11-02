@@ -58,6 +58,8 @@ mod marks_ui;
 mod measure_ui;
 mod ocr_ui;
 mod optimize_ui;
+#[cfg(target_os = "macos")]
+mod page_drag_export;
 mod search_ui;
 mod sign_ui;
 mod stamps_ui;
@@ -93,6 +95,7 @@ mod icon_data;
 pub mod icons;
 pub mod last_session;
 pub mod motion;
+mod page_marquee;
 mod page_selection_ui;
 mod pageboxes;
 mod palette;
@@ -145,6 +148,17 @@ pub mod window_controls;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod open_worker_tests;
+
+#[cfg(test)]
+mod window_isolation_tests;
+
+/// Persistent widget data is shared by egui viewports even though input and focus are not.
+/// Keep existing root-window IDs for saved UI state, and namespace every additional window.
+pub(crate) fn window_id(ctx: &egui::Context, salt: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+    let id = egui::Id::new(salt);
+    let viewport = ctx.viewport_id();
+    if viewport == egui::ViewportId::ROOT { id } else { id.with(viewport) }
+}
 
 use pdfcraft_engine::{DocId, Session};
 
@@ -419,6 +433,8 @@ pub struct PasswordPrompt {
     pub error: Option<String>,
     /// A late startup file must stay in the background even after it is unlocked.
     activate: bool,
+    /// Subject window that owns an older comparison copy after password entry.
+    comparison_subject: Option<DocId>,
     /// The bytes are a recovery snapshot: once the document is open it takes the snapshot's
     /// path and recovery entry. Cancelling the prompt drops the association with it (#813).
     recovered: Option<RecoveryMeta>,
@@ -437,6 +453,8 @@ struct PendingOpen {
     path: Option<String>,
     stamp: Option<file_watch::Stamp>,
     activate: bool,
+    /// Subject window that owns an older comparison copy after password entry.
+    comparison_subject: Option<DocId>,
     after_open: Option<pdfcraft_render::RemoteDestination>,
     recovered: Option<RecoveryMeta>,
     then: Option<&'static str>,
@@ -450,6 +468,8 @@ struct OpenRequest {
     input: open_worker::Input,
     password: Option<String>,
     activate: bool,
+    /// Subject window that owns an older comparison copy after password entry.
+    comparison_subject: Option<DocId>,
     after_open: Option<pdfcraft_render::RemoteDestination>,
     recovered: Option<RecoveryMeta>,
     then: Option<&'static str>,
@@ -480,7 +500,20 @@ pub struct RecentFile {
     pub size: usize,
 }
 
+/// An owned request for another independent native document window.
+pub enum WindowOpen {
+    Path { path: String, then: Option<&'static str> },
+    Bytes { name: String, path: Option<String>, bytes: Vec<u8> },
+    Created { name: String, bytes: std::sync::Arc<Vec<u8>> },
+    CancelQuit,
+    Quit,
+}
+
 pub struct PdfCraftApp {
+    #[cfg(target_os = "macos")]
+    drag_exports: Vec<tempfile::TempDir>,
+    #[cfg(target_os = "macos")]
+    drag_export_finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub docking: docking::Workspace,
     pub(crate) pending_panel_reveals: Vec<docking::Panel>,
     pub session: Session,
@@ -588,6 +621,18 @@ pub struct PdfCraftApp {
     /// Folders pinned to Home, and what they held when last listed.
     pub pinned: folders_ui::PinnedFolders,
     pub toast: Option<(String, f64)>,
+    /// Local macOS build: one document in each native window, with no tab strip.
+    pub single_document_window: bool,
+    /// Owning viewport, retained when the host acts from another window on a shared Context.
+    pub native_viewport: egui::ViewportId,
+    /// Visible native windows reported by the desktop host to the opt-in control channel.
+    pub desktop_windows: usize,
+    /// Aggregated unsaved work, so the quit API reports the real confirmation state.
+    pub desktop_dirty: bool,
+    /// A closed document window is retired by the desktop host without ending the process.
+    pub window_closed: bool,
+    /// Routes subsequent opens to the desktop host instead of inserting another tab.
+    pub window_open: Option<std::sync::mpsc::Sender<WindowOpen>>,
     /// Whether the macOS title bar is drawn by us (traffic lights over our tab strip).
     pub integrated_titlebar: bool,
     /// Set when the desktop leaves the window frame to the app (GNOME on Wayland): the tab strip
@@ -668,6 +713,8 @@ pub struct PdfCraftApp {
     pub pdfa: standards_ui::PdfaState,
     /// Compare files: the chosen older document and the last result.
     pub compare_old: Option<DocId>,
+    /// The subject and its owned, non-editable comparison copy.
+    pub(crate) comparison_copy: Option<(DocId, DocId)>,
     pub compare: Option<compare_ui::CompareState>,
     /// The JavaScript console and the Document JavaScripts draft.
     pub js_console: js_ui::JsConsole,
@@ -897,7 +944,7 @@ impl PdfCraftApp {
             left: LeftPanel::AllTools,
             docking: docking::Workspace::default(),
             pending_panel_reveals: Vec::new(),
-            left_open: true,
+            left_open: false,
             right: None,
             right_before_read: None,
             comments_panel_closed: false,
@@ -946,6 +993,12 @@ impl PdfCraftApp {
             open_prepare_gate: None,
             pinned: Default::default(),
             toast: None,
+            single_document_window: false,
+            native_viewport: egui::ViewportId::ROOT,
+            desktop_windows: 1,
+            desktop_dirty: false,
+            window_closed: false,
+            window_open: None,
             integrated_titlebar: false,
             window_controls: None,
             system_title_bar: false,
@@ -975,6 +1028,10 @@ impl PdfCraftApp {
             export_dir_override: None,
             split_draft: SplitDraft::default(),
             extract_draft: ExtractDraft::default(),
+            #[cfg(target_os = "macos")]
+            drag_exports: Vec::new(),
+            #[cfg(target_os = "macos")]
+            drag_export_finished: Default::default(),
             rotate_draft: RotateDraft::default(),
             summary_sort: Default::default(),
             sign_draft: None,
@@ -991,6 +1048,7 @@ impl PdfCraftApp {
             action_files_override: None,
             pdfa: Default::default(),
             compare_old: None,
+            comparison_copy: None,
             compare: None,
             js_console: Default::default(),
             doc_js: Default::default(),
@@ -1084,17 +1142,9 @@ impl PdfCraftApp {
     /// Open a document the way it asks to be opened: navigation panel, layout, magnification,
     /// page (Document Properties ▸ Initial View).
     fn apply_initial_view(&mut self, index: usize, v: &pdfcraft_engine::InitialView) {
-        use pdfcraft_engine::{InitialLayout as L, Magnification as M, Navigation as N};
+        use pdfcraft_engine::{InitialLayout as L, Magnification as M};
         let pages = self.session.get(self.views[index].id).map_or(0, |d| d.info.pages.len());
-        if self.active == Some(index) {
-            match v.navigation {
-                N::PageOnly => {}
-                N::Bookmarks => self.right = Some(RightPanel::Bookmarks),
-                N::Pages => self.right = Some(RightPanel::Pages),
-                N::Attachments => self.right = Some(RightPanel::Attachments),
-                N::Layers => self.right = Some(RightPanel::Layers),
-            }
-        }
+        // Local reading preference takes priority over a PDF's requested navigation pane.
         let view = &mut self.views[index];
         match v.layout {
             // The view opened in Default page display already.
@@ -1126,6 +1176,15 @@ impl PdfCraftApp {
 
     /// Open a document and make it the active tab. Encrypted files raise the password prompt.
     pub fn open_bytes(&mut self, name: &str, path: Option<String>, bytes: Vec<u8>) -> Result<(), String> {
+        if self.single_document_window
+            && self.window_occupied()
+            && let Some(sender) = &self.window_open
+        {
+            return sender
+                .send(WindowOpen::Bytes { name: name.to_owned(), path, bytes })
+                .map_err(|_| "the desktop window manager is unavailable".to_string());
+        }
+        self.window_closed = false;
         self.startup_superseded = true;
         self.open_bytes_with_focus(name, path, bytes, true)
     }
@@ -1168,6 +1227,7 @@ impl PdfCraftApp {
             path: request.path,
             stamp: request.stamp,
             activate: request.activate,
+            comparison_subject: request.comparison_subject,
             after_open: request.after_open,
             recovered: request.recovered,
             then: request.then,
@@ -1242,6 +1302,9 @@ impl PdfCraftApp {
                         if let Some(command) = pending.then {
                             self.execute(command);
                         }
+                        if let Some(subject) = pending.comparison_subject {
+                            self.finish_comparison_copy(subject, id);
+                        }
                     }
                     Err(error) => self.notify_fmt("Couldn't open {name}: {e}", &[("name", &pending.name), ("e", &error)]),
                 },
@@ -1256,6 +1319,7 @@ impl PdfCraftApp {
                         input: String::new(),
                         error: password_error,
                         activate: pending.activate,
+                        comparison_subject: pending.comparison_subject,
                         recovered: pending.recovered,
                         then: pending.then,
                         after_open: pending.after_open,
@@ -1290,6 +1354,7 @@ impl PdfCraftApp {
                     input: String::new(),
                     error,
                     activate,
+                    comparison_subject: None,
                     recovered: None,
                     then: None,
                     after_open: None,
@@ -1316,19 +1381,6 @@ impl PdfCraftApp {
         self.session.set_reading_colors(id, self.reading_colors);
         let doc = self.session.get(id).ok_or("the document could not be opened")?;
         let pages = doc.info.pages.len();
-        // Acrobat opens straight to the Comments panel when a document has comments.
-        // Read mode opens with the panes closed; the rail still opens them (#932). A right panel
-        // the user closed stays closed (#1590).
-        let opening_mode = self.mode_override.unwrap_or(self.default_mode);
-        if activate && self.right.is_none() && !self.right_panel_closed && opening_mode != Mode::Read {
-            self.right = if !doc.info.annotations.is_empty() {
-                Some(RightPanel::Comments)
-            } else if !doc.info.outline.is_empty() {
-                Some(RightPanel::Bookmarks)
-            } else {
-                None
-            };
-        }
         let initial = doc.initial_view();
         self.views.push(DocView::new(id, &doc.info, self.view_defaults));
         if activate {
@@ -1356,6 +1408,12 @@ impl PdfCraftApp {
             let left_open = self.left_open;
             self.select_mode(self.default_mode);
             self.left_open = left_open;
+        }
+        if activate {
+            self.left_open = false;
+            self.right = Some(RightPanel::Pages);
+            self.right_panel_closed = false;
+            self.right_before_read = None;
         }
         if let Some(p) = path {
             self.recent.retain(|r| r.path != p);
@@ -1391,6 +1449,7 @@ impl PdfCraftApp {
                         input: open_worker::Input::Bytes(std::sync::Arc::new(bytes)),
                         password: None,
                         activate: true,
+                        comparison_subject: None,
                         after_open: None,
                         recovered: None,
                         then: None,
@@ -1597,6 +1656,7 @@ impl PdfCraftApp {
                 input: open_worker::Input::Bytes(p.bytes.clone()),
                 password: Some(pw),
                 activate: p.activate,
+                comparison_subject: p.comparison_subject,
                 after_open: p.after_open.clone(),
                 recovered: p.recovered.clone(),
                 then: p.then,
@@ -1634,11 +1694,15 @@ impl PdfCraftApp {
                 if let Some(command) = p.then {
                     self.execute(command);
                 }
+                if let (Some(subject), Some(reference)) = (p.comparison_subject, self.views.last().map(|view| view.id)) {
+                    self.finish_comparison_copy(subject, reference);
+                }
             }
             // Wrong password: the new prompt is for the same bytes, so it keeps the snapshot
             // and the tool waiting for it.
             Ok(()) => {
                 if let Some(prompt) = self.password_prompt.as_mut() {
+                    prompt.comparison_subject = p.comparison_subject;
                     prompt.recovered = p.recovered;
                     prompt.then = p.then;
                     prompt.after_open = after_open;
@@ -1736,6 +1800,7 @@ impl PdfCraftApp {
             input: open_worker::Input::RemotePath(std::path::PathBuf::from(path)),
             password: None,
             activate: true,
+            comparison_subject: None,
             after_open: Some(destination),
             recovered: None,
             then: None,
@@ -1772,6 +1837,92 @@ impl PdfCraftApp {
         }
     }
 
+    /// Includes queued reads and password prompts: opening two files quickly must never
+    /// accidentally put both documents in the same window.
+    pub fn window_occupied(&self) -> bool {
+        !self.views.is_empty()
+            || self.password_prompt.is_some()
+            || self.image_import.is_some()
+            || self.combine_showing()
+            || self.dialog.is_some()
+            || {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    !self.pending_opens.is_empty()
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    false
+                }
+            }
+    }
+
+    /// Reuse an open or loading local file without reloading its edits or view state.
+    /// The desktop host calls this before allocating another native window.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn activate_open_path(&mut self, path: &str, then: Option<&'static str>) -> bool {
+        if self.window_closed {
+            return false;
+        }
+        let matches = |candidate: &str| {
+            if candidate == path {
+                return true;
+            }
+            if let (Ok(a), Ok(b)) = (std::fs::canonicalize(candidate), std::fs::canonicalize(path))
+                && a == b
+            {
+                return true;
+            }
+            // On macOS this also recognises case aliases and hard links to the same file.
+            #[cfg(unix)]
+            if let (Ok(a), Ok(b)) = (std::fs::metadata(candidate), std::fs::metadata(path)) {
+                use std::os::unix::fs::MetadataExt;
+                return a.dev() == b.dev() && a.ino() == b.ino();
+            }
+            false
+        };
+        if let Some(index) = self.views.iter().position(|view| self.session.get(view.id).and_then(|doc| doc.path.as_deref()).is_some_and(matches)) {
+            self.active = Some(index);
+            if let Some(command) = then {
+                self.execute(command);
+            }
+            return true;
+        }
+        if let Some(pending) = self.pending_opens.iter_mut().find(|pending| pending.path.as_deref().is_some_and(matches)) {
+            if then.is_some() {
+                pending.then = then;
+            }
+            return true;
+        }
+        if let Some(prompt) = self.password_prompt.as_mut().filter(|prompt| prompt.path.as_deref().is_some_and(matches)) {
+            if then.is_some() {
+                prompt.then = then;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Use the existing asynchronous file reader when a host creates a new document window.
+    pub fn prepare_native_window(&mut self, ctx: &egui::Context) {
+        self.ctx = Some(ctx.clone());
+    }
+
+    /// Preserve the normal save/discard/cancel flow when the desktop host asks to close.
+    pub fn close_native_window(&mut self, ctx: &egui::Context) {
+        if self.views.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.pending_opens.clear();
+            self.password_prompt = None;
+            self.image_import = None;
+            self.dialog = None;
+            self.window_closed = true;
+            ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::Visible(false));
+        } else {
+            self.request_close_tab(0);
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &str) {
         self.open_path_then(path, None);
@@ -1779,7 +1930,18 @@ impl PdfCraftApp {
 
     /// Keep a chosen tool with its file until preparation and any password entry finish.
     #[cfg(not(target_arch = "wasm32"))]
-    fn open_path_then(&mut self, path: &str, then: Option<&'static str>) {
+    pub fn open_path_then(&mut self, path: &str, then: Option<&'static str>) {
+        // The desktop host must also see repeated opens so it can focus the owning native
+        // window and preserve a tool requested while that file is still loading.
+        if self.single_document_window
+            && self.window_occupied()
+            && let Some(sender) = &self.window_open
+        {
+            if sender.send(WindowOpen::Path { path: path.to_owned(), then }).is_err() {
+                self.notify("The desktop window manager is unavailable");
+            }
+            return;
+        }
         // One file, one tab (#2166): a file that is open already comes to the front instead,
         // and the tool it was opened for runs on it. One still being opened is left to that.
         if let Some(i) = self.tab_showing(path) {
@@ -1792,6 +1954,7 @@ impl PdfCraftApp {
         if self.pending_opens.iter().any(|p| p.path.as_deref().is_some_and(|p| same_file(p, path))) {
             return;
         }
+        self.window_closed = false;
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
         // Taken before reading: a build that rewrites the file meanwhile still counts as a change.
         let stamp = file_watch::Stamp::at(path);
@@ -1827,6 +1990,7 @@ impl PdfCraftApp {
             input: open_worker::Input::Path(std::path::PathBuf::from(path)),
             password: None,
             activate: true,
+            comparison_subject: None,
             after_open: None,
             recovered: None,
             then,
@@ -1878,6 +2042,20 @@ impl PdfCraftApp {
         if index >= self.views.len() {
             return;
         }
+        let closing = self.views[index].id;
+        if let Some((subject, reference)) = self.comparison_copy {
+            if closing == subject {
+                self.remove_comparison_copy();
+                let Some(new_index) = self.views.iter().position(|view| view.id == closing) else { return };
+                self.close_tab(new_index);
+                return;
+            }
+            if closing == reference {
+                self.comparison_copy = None;
+                self.compare_old = None;
+                self.compare = None;
+            }
+        }
         let id = self.views.remove(index).id;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = self.session.get(id).and_then(|d| d.path.clone()) {
@@ -1894,6 +2072,13 @@ impl PdfCraftApp {
             Some(a) if a >= self.views.len() => Some(self.views.len() - 1),
             other => other,
         };
+        if self.single_document_window && self.views.is_empty() {
+            self.window_closed = true;
+            if let Some(ctx) = &self.ctx {
+                ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::Visible(false));
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
+            }
+        }
     }
 
     /// Moves the tab at `from` so it sits at `to` (#1537). The same document stays active
@@ -2786,6 +2971,16 @@ impl PdfCraftApp {
         {
             return;
         }
+        if let Some(view) = self.active.and_then(|i| self.views.get_mut(i))
+            && view.page_marquee.is_some()
+        {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                // 取消框选时即使仍按住 Command/Shift，Escape 也只作用于本次手势。
+                ctx.input_mut(|i| i.events.retain(|event| !matches!(event, egui::Event::Key { key: Key::Escape, .. })));
+                page_marquee::cancel(view);
+            }
+            return;
+        }
         self.registry_shortcuts(ctx);
         // (Esc closes a Combine file shown large first.)
         if self.full_screen && self.combine_tab.preview.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -2914,7 +3109,15 @@ impl eframe::App for PdfCraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.native_viewport = ctx.viewport_id();
         self.ctx = Some(ctx.clone());
+        #[cfg(target_os = "macos")]
+        if self.drag_export_finished.swap(false, std::sync::atomic::Ordering::Acquire) {
+            // AppKit consumes the release during a native drag (also when Escape cancels it).
+            // Reset only this viewport so a missing mouse-up cannot leave a stuck gesture.
+            ctx.input_mut(|input| input.pointer = Default::default());
+            ctx.stop_dragging();
+        }
         self.dialog_epoch();
         // Notices raised outside `ui` (opened files, OS events, the control channel) translate too.
         let lang = i18n::Lang::from_pref(&self.language);
@@ -3013,7 +3216,7 @@ impl eframe::App for PdfCraftApp {
                 #[cfg(target_arch = "wasm32")]
                 OsEvent::Open(_) => {}
                 // Like closing the window: `guard_quit` asks about unsaved changes.
-                OsEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                OsEvent::Quit => ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::Close),
             }
         }
         if let Some((_, id)) = self.active_ids() {
@@ -3026,7 +3229,9 @@ impl eframe::App for PdfCraftApp {
         }
         self.guard_quit(ctx);
         // macOS: quit through `terminate:` instead of dropping the window (Touch Bar crash, #1136).
-        craft_quit::on_close_request(ctx);
+        if !self.single_document_window {
+            craft_quit::on_close_request(ctx);
+        }
         let now = ctx.input(|i| i.time);
         self.autosave_tick(now);
         // Reload documents whose files a build rewrote (#431).
@@ -3050,6 +3255,7 @@ impl eframe::App for PdfCraftApp {
             view.objects.set_input_blocked(blocked || self.active != Some(index));
             if blocked || self.active != Some(index) {
                 view.auto_scroll.cancel();
+                page_marquee::cancel(view);
             }
         }
         // A field that refused its value this frame keeps the shortcut from saving or printing
@@ -3150,6 +3356,8 @@ impl eframe::App for PdfCraftApp {
             }
         });
         self.process_pending_edits();
+        #[cfg(target_os = "macos")]
+        self.process_page_drag_export(&ctx, _frame);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
         self.show_progress(&ctx);
@@ -3160,6 +3368,11 @@ impl eframe::App for PdfCraftApp {
 
 impl PdfCraftApp {
     fn finish_render_frame(&mut self, ctx: &egui::Context) {
+        for view in &mut self.views {
+            if view.page_marquee.as_ref().is_some_and(|s| s.seen != ctx.cumulative_frame_nr()) {
+                page_marquee::cancel(view);
+            }
+        }
         // The Combine grid's thumbnails, whichever tab shows (renders under way still finish).
         self.combine_thumbs_frame(ctx);
         // Retire hidden documents before admitting the visible document's textures, so the

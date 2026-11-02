@@ -439,6 +439,9 @@ impl PdfCraftApp {
     /// user has been told why, so the typing isn't lost and the caller can stop.
     fn apply_queued_edit(&mut self, i: usize) -> bool {
         let Some(edit) = self.views.get_mut(i).and_then(|v| v.pending_edit.take()) else { return true };
+        if self.views.get(i).is_some_and(|view| self.is_comparison_copy(view.id)) {
+            return true;
+        }
         let signature_page = self.views.get_mut(i).and_then(|v| v.fill_signature_page.take());
         let committed = self.views.get_mut(i).and_then(|v| v.forms.committed.take());
         let typed = match (&edit, &committed) {
@@ -830,7 +833,11 @@ impl PdfCraftApp {
             }
         }
         match choice {
-            None => {} // cancelled: nothing closes
+            None => {
+                if let Some(sender) = &self.window_open {
+                    let _ = sender.send(crate::WindowOpen::CancelQuit);
+                }
+            } // cancelled: nothing closes
             Some(false) => self.close_and_continue(ctx, index, req),
             Some(true) => {
                 let Some(id) = self.views.get(index).map(|v| v.id) else { return };
@@ -866,6 +873,13 @@ impl PdfCraftApp {
     /// Request a normal application exit, preserving every unsaved document until answered.
     /// Returns false while the existing save/discard/cancel prompt needs a decision.
     pub(crate) fn request_quit(&mut self, ctx: &egui::Context) -> bool {
+        if self.single_document_window {
+            if let Some(sender) = &self.window_open {
+                let _ = sender.send(crate::WindowOpen::Quit);
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
+            }
+            return !self.desktop_dirty;
+        }
         if self.first_dirty().is_some() {
             self.close_request = Some(CloseRequest::Quit);
             ctx.request_repaint();
@@ -879,7 +893,7 @@ impl PdfCraftApp {
 
     fn quit(&mut self, ctx: &egui::Context) {
         self.allow_quit = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::Close);
     }
 
     /// Publish whether any document has unsaved work, for the browser's reload warning (#812).
@@ -904,9 +918,18 @@ impl PdfCraftApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
+        if self.single_document_window {
+            ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::CancelClose);
+            if self.window_closed {
+                ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::Visible(false));
+                return;
+            }
+            self.close_native_window(ctx);
+            return;
+        }
         // `first_dirty` counts text typed into a field as an unsaved change.
         if !self.allow_quit && self.first_dirty().is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd_to(self.native_viewport, egui::ViewportCommand::CancelClose);
             self.close_request = Some(CloseRequest::Quit);
         } else {
             // A clean quit: nothing is left to recover.

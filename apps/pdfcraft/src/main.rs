@@ -33,6 +33,8 @@ use pdfcraft_ui_egui::PdfCraftApp;
 mod apple_events;
 mod compositor_gpu;
 mod decorations;
+#[cfg(target_os = "macos")]
+mod desktop;
 mod logging;
 #[cfg(target_os = "windows")]
 mod motion;
@@ -318,7 +320,7 @@ fn native_options(integrated: bool, app_frame: bool, renderer: eframe::Renderer)
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("app icon: {e}"),
     }
-    if integrated {
+    if integrated && !cfg!(target_os = "macos") {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     }
     if app_frame {
@@ -392,11 +394,9 @@ fn app_creator<'a>(
         #[cfg(target_os = "macos")]
         {
             app.os_events = Some(apple_events.connect(&cc.egui_ctx));
-            // winit's Quit (⌘Q) ends the process without asking about unsaved changes (#1136). This
-            // menu's Quit closes the window instead, so `guard_quit` asks, as for the close button.
-            if let Err(e) = craft_quit::install_app_menu(&cc.egui_ctx, "PdfCraft") {
-                log::warn!("couldn't install the app menu, so ⌘Q quits without asking to save: {e}");
-            }
+            // The desktop host owns application quit across all document windows. Its Apple
+            // event handler and exact Command-Q shortcut keep every unsaved prompt alive.
+            // A single-window quit menu would close only the hidden/root viewport.
         }
         if let Some(server) = instance {
             app.os_events = Some(server.connect(&cc.egui_ctx, native_wayland(cc)));
@@ -429,6 +429,14 @@ fn app_creator<'a>(
                 &[("folder", &w.folder.display().to_string()), ("error", &w.error)],
             );
         }
+        #[cfg(target_os = "macos")]
+        let (window_sender, window_receiver) = std::sync::mpsc::channel();
+        #[cfg(target_os = "macos")]
+        {
+            app.single_document_window = true;
+            app.integrated_titlebar = false;
+            app.window_open = Some(window_sender.clone());
+        }
         if create_images {
             if let Err(e) = app.begin_image_import_paths(&files) {
                 app.notify(e);
@@ -446,7 +454,14 @@ fn app_creator<'a>(
                 log::warn!("--{k} {v}: {e}");
             }
         }
-        Ok(Box::new(app))
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Box::new(desktop::Desktop::new(app, window_receiver, window_sender)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(Box::new(app))
+        }
     })
 }
 

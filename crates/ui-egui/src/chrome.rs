@@ -27,6 +27,10 @@ const TAB_HEIGHT: f32 = 30.0;
 const STRIP_BUTTON: f32 = 28.0;
 
 pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    if app.single_document_window {
+        return;
+    }
+
     let t = Tokens::get(ui.ctx());
     // macOS: the strip is the 28 pt title bar, so the traffic lights are centred in it; tabs and
     // buttons shrink to keep a margin above and below.
@@ -715,11 +719,12 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     }
                 }
                 ui.label(egui::RichText::new(page_count.to_string()).font(theme::regular(11.0)).color(t.text_muted));
-                let page_input_id = view.page_input_id();
+                let page_input_id = view.page_input_id(ui.ctx());
                 // Consume replacement selection once, including when the editor has lost focus.
                 let reselect = std::mem::take(&mut view.page_input_reselect);
                 // Navigation updates the idle display, never the text being edited.
-                if !ui.memory(|m| m.has_focus(page_input_id)) {
+                view.page_input_focused = ui.memory(|m| m.has_focus(page_input_id));
+                if !view.page_input_focused {
                     view.page_input = view.current_page_label(labels.get(view.current).map(String::as_str));
                 } else if reselect {
                     // The replacement changed the label while egui retained this editor's cursor.
@@ -741,6 +746,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     .show(ui, |ui| ui.add(edit))
                     .inner
                     .on_hover_text(tl!("Current page — type a page number or label (such as iv) and press Enter"));
+                view.page_input_focused = r.has_focus();
                 if r.lost_focus() {
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         // A page label first (logical page numbers, as Acrobat), then a number.
