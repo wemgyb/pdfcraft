@@ -932,11 +932,24 @@ impl Automation {
         // A save that adds or removes encryption, or must not keep the old revision (Sanitize,
         // redaction), is rewritten in full even when an incremental save was asked for.
         let incremental = !full && bytes.starts_with(&self.doc(a)?.saved_bytes());
-        self.session.check_save(id, &bytes).map_err(failed)?;
-        write(&target, &bytes)?;
+        let path = self.publish_saved_bytes(id, &target, &bytes, write)?;
+        Ok(json!({ "path": path, "bytes": bytes.len(), "incremental": incremental, "document": summary(self.doc(a)?) }))
+    }
+
+    /// Publish a writer result only after it reopens. The caller has already resolved and
+    /// checked the target against both automation roots; failed validation changes no state.
+    fn publish_saved_bytes(
+        &mut self,
+        id: DocId,
+        target: &Path,
+        bytes: &Arc<Vec<u8>>,
+        write: impl FnOnce(&Path, &[u8]) -> Result<()>,
+    ) -> Result<String> {
+        self.session.check_save(id, bytes).map_err(failed)?;
+        write(target, bytes)?;
         let path = target.to_string_lossy().into_owned();
         self.session.mark_saved(id, bytes.clone(), Some(path.clone())).map_err(failed)?;
-        Ok(json!({ "path": path, "bytes": bytes.len(), "incremental": incremental, "document": summary(self.doc(a)?) }))
+        Ok(path)
     }
 
     fn doc_revisions(&mut self, a: &Args) -> Result<Value> {
@@ -2956,6 +2969,29 @@ mod tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn a_save_that_does_not_reopen_leaves_the_file_as_it_was() {
+        let dir = staging_dir("invalid-save-output");
+        let target = dir.join("out.pdf");
+        let mut a = Automation::new().with_root(&dir).unwrap();
+        let id = search_document(&mut a, 2);
+        json(&mut a, "doc_save", json!({"doc": id.0, "path": "out.pdf"}));
+        let original = std::fs::read(&target).unwrap();
+        json(&mut a, "page_rotate", json!({"doc": id.0, "pages": [1], "degrees": 90}));
+        let before = summary(a.session.get(id).unwrap());
+        assert!(a.session.get(id).unwrap().dirty);
+        // Inject a definitely invalid writer result at the production publication boundary.
+        // This stays meaningful when the parser learns to repair more damaged input files.
+        let invalid = Arc::new(b"invalid PDF output: no objects or page tree".to_vec());
+        let error = a.publish_saved_bytes(id, &target, &invalid, write_atomic).unwrap_err();
+        assert!(error.to_string().contains("could not be reopened"), "{error}");
+        assert_eq!(std::fs::read(&target).unwrap(), original, "an invalid writer result must never replace the original file");
+        assert!(a.session.get(id).unwrap().dirty);
+        assert_eq!(summary(a.session.get(id).unwrap()), before, "failed validation must not reset document state or history");
+        assert_eq!(listing(&dir), ["out.pdf"], "validation failure creates no staging artifact");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

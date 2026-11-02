@@ -50,6 +50,9 @@ fn harness_pages_at(pages: usize, width: f32, scale: f32) -> (Harness<'static, P
         app.set_option("language", "en").unwrap();
         *s.lock().unwrap() = Some(app.attach_control(&cc.egui_ctx));
         app.open_bytes("doc.pdf", None, fixture(pages)).unwrap();
+        // 停靠与菜单测试使用明确的布局，不依赖定制版的启动面板偏好。
+        app.left_open = true;
+        app.right = None;
         app
     });
     h.run_steps(4);
@@ -1617,7 +1620,9 @@ fn navigation_history_commands_and_rail_are_per_tab_and_non_editing() {
     ok(&mut h, &c, "ui.set", json!({"key": "page", "value": "4"}));
     assert!(enabled(ok(&mut h, &c, "ui.commands", json!({})), "view.previous_view"));
     // The real rail button is accessible and invokes the same history, not the adjacent page.
-    ok(&mut h, &c, "ui.click", json!({"label": &format!("Previous view ({})", if cfg!(target_os = "macos") { "⌘[" } else { "Ctrl+[" })}));
+    // The headless harness supplies its own OS (Nix by default), independent of the host.
+    let shortcut = if h.ctx.os() == egui::os::OperatingSystem::Mac { "⌘[" } else { "Ctrl+[" };
+    ok(&mut h, &c, "ui.click", json!({"label": &format!("Previous view ({shortcut})")}));
     assert_eq!(h.state().views[0].current, 0);
     assert!(enabled(ok(&mut h, &c, "ui.commands", json!({})), "view.next_view"));
     ok(&mut h, &c, "ui.command", json!({"id": "view.next_view"}));
@@ -1659,4 +1664,73 @@ fn routine_continuous_scrolling_does_not_add_navigation_history() {
     assert!(h.state().views[0].current > 0, "the wheel really moved to a later page");
     assert!(h.state().views[0].back.is_empty());
     assert!(h.state().views[0].forward.is_empty());
+}
+
+#[test]
+fn local_document_opens_with_tools_closed_and_pages_even_for_bookmark_initial_view() {
+    use pdfcraft_engine::{Edit, Navigation};
+    let mut app = PdfCraftApp::new();
+    app.open_bytes("first.pdf", None, fixture(6)).unwrap();
+    assert!(!app.left_open);
+    assert_eq!(app.right, Some(pdfcraft_ui_egui::RightPanel::Pages));
+    let id = app.views[0].id;
+    let mut initial = app.session.get(id).unwrap().initial_view();
+    initial.navigation = Navigation::Bookmarks;
+    app.session.apply(id, Edit::SetInitialView(Box::new(initial))).unwrap();
+    let bytes = app.session.save_bytes(id).unwrap();
+    app.left_open = true;
+    app.choose_right_panel(Some(pdfcraft_ui_egui::RightPanel::Bookmarks));
+    app.open_bytes("bookmarks.pdf", None, bytes.to_vec()).unwrap();
+    assert!(!app.left_open);
+    assert_eq!(app.right, Some(pdfcraft_ui_egui::RightPanel::Pages));
+}
+
+#[test]
+fn local_thumbnail_panel_reflows_past_old_width_limit_and_navigates() {
+    let (mut h, c) = harness_pages(12);
+    ok(&mut h, &c, "ui.set", json!({"key":"panel", "value":"pages"}));
+    ok(&mut h, &c, "ui.set", json!({"key":"left", "value":"closed"}));
+    h.run_steps(4);
+    let first = h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 1").rect();
+    let second = h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 2").rect();
+    assert!((second.top() - first.top()).abs() < 1.0);
+    let small_size = first.size();
+    ok(&mut h, &c, "ui.dock", json!({"operation":"resizeSplit", "path":[], "size":{"FixedSecond":800.0}}));
+    h.run_steps(6);
+    let first = h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 1").rect();
+    let second = h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 2").rect();
+    assert!((second.top() - first.top()).abs() < 1.0);
+    let sixth = h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 6").rect();
+    assert!((sixth.top() - first.top()).abs() < 1.0);
+    assert!(sixth.right() - first.left() > 520.0);
+    assert_eq!(first.size(), small_size);
+    assert_eq!(first.size(), second.size());
+    assert_eq!(first.width(), 112.0);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Page 3").click();
+    h.run_steps(4);
+    assert_eq!(h.state().views[0].current, 2);
+}
+
+#[test]
+fn page_marquee_is_reachable_through_control_in_both_views() {
+    for panel in [true, false] {
+        let (mut h, c) = harness_pages(8);
+        ok(&mut h, &c, "ui.set", json!({"key":"panel", "value": if panel {"pages"} else {"none"}}));
+        ok(&mut h, &c, "ui.set", json!({"key":"organize", "value": if panel {"off"} else {"on"}}));
+        h.run_steps(3);
+        let rect = |h: &Harness<'static, PdfCraftApp>, label: &str| {
+            h.get_all_by_label(label).map(|n| n.rect()).max_by(|a, b| a.left().total_cmp(&b.left())).unwrap()
+        };
+        let a = rect(&h, "Page 1");
+        let b = rect(&h, "Page 2");
+        let args = json!({"from":[a.left()-3.0, a.top()+3.0], "to":[b.right()-3.0,b.bottom()-3.0], "steps":8});
+        ok(&mut h, &c, "ui.drag", args.clone());
+        let state = ok(&mut h, &c, "ui.state", json!({}));
+        assert_eq!(state["active"]["selected_pages"], json!([1, 2]), "panel={panel}");
+        let mut toggle = args;
+        toggle["modifiers"] = json!(["command"]);
+        ok(&mut h, &c, "ui.drag", toggle);
+        assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["active"]["selected_pages"], json!([]));
+        assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+    }
 }

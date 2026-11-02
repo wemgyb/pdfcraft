@@ -179,6 +179,8 @@ M2 (renderer), M7 (content editing), M10 (OCR and Office), M11 (Preflight and st
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | minor | macOS local.9 combines local.8 custom controls with main through `afa8e184`, including window-scoped comparison copies, page-label input and autosave ownership. |
+| 2026-10-31 | minor | macOS local.8: independent windows, thumbnail navigation, PDF drag-out copies and rectangle page selection on the 0.8.0 release base. |
 | 2026-10-12 | minor | M6: valid AcroForm XML element names with original PDF field names preserved; saved-PDF collision and Unicode regressions. Estimates unchanged. |
 | 2026-10-12 | minor | M6: preserve carriage returns in exported CSV field names and values; saved-PDF round-trip coverage. Estimates unchanged. |
 | 2026-10-12 | minor | M7 local candidate: text drafts grow and save their width; single visual rows grow across style boundaries; both text tools retype added items and Add Text edits source text. Added-item textless previews are read-only and covered by UI/tool regressions. Estimates unchanged. |

@@ -332,3 +332,17 @@ fn primary_ui_fonts_cover_latin_and_cyrillic_catalogs() {
         }
     }
 }
+
+/// Visual probe for the canonically decomposed Bulgarian grave accent in the shipping-label hint.
+#[test]
+fn bulgarian_grave_accent_visual_probe() {
+    let Ok(path) = std::env::var("PDFCRAFT_FONT_SHOT") else { return };
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(960.0, 300.0)).build_ui(|ui| {
+        ui.label(egui::RichText::new("Inter: ѝ | и\u{0300}").font(FontId::proportional(44.0)));
+        ui.label(egui::RichText::new("Mono: и\u{0300}").font(FontId::monospace(44.0)));
+        ui.label(egui::RichText::new("отпечатаната и\u{0300} област").font(FontId::proportional(28.0)));
+    });
+    h.ctx.set_fonts(theme::font_definitions());
+    h.run_steps(4);
+    h.render().unwrap().save(path).unwrap();
+}

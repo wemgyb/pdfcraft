@@ -69,12 +69,13 @@ fn compare_panel_screenshot() {
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
-        app.open_bytes("v1.pdf", None, v1.clone()).unwrap();
+        app.single_document_window = true;
         app.open_bytes("v2.pdf", None, v2.clone()).unwrap();
+        app.use_files(pdfcraft_ui_egui::FilePurpose::Compare, vec![("v1.pdf".into(), v1.clone())]);
+        app.dialog = None;
         app
     });
     h.run_steps(4);
-    h.state_mut().compare_old = h.state().views.first().map(|v| v.id);
     h.state_mut().run_compare();
     for _ in 0..20 {
         h.run_steps(2);

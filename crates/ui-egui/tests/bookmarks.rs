@@ -231,6 +231,8 @@ trailer << /Root 1 0 R >>
 %%EOF";
     let mut h = harness();
     h.state_mut().open_bytes("tagged.pdf", None, TAGGED.to_vec()).unwrap();
+    // Local builds open each document with Pages visible; this test exercises Bookmarks.
+    h.state_mut().set_option("panel", "bookmarks").unwrap();
     h.run_steps(3);
     h.get_by_label("Bookmark options").click();
     h.run_steps(2);

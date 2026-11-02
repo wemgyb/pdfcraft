@@ -68,6 +68,9 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
         ui.label(egui::RichText::new(new_name).strong());
         ui.end_row();
     });
+    if app.single_document_window && widgets::pill_button(ui, tl!("Open…"), false).clicked() {
+        app.pick_files(crate::files::FilePurpose::Compare, false);
+    }
     ui.add_space(4.0);
     ui.label(egui::RichText::new(tl!("Text is compared word by word; the differences are shown on the new file.")).small().color(t.text_muted));
     ui.add_space(10.0);
@@ -163,6 +166,50 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &Option<CompareState>,
 }
 
 impl PdfCraftApp {
+    /// A comparison owns a detached copy: its source window and on-disk file stay untouched.
+    /// Opening a normal PDF continues to use the desktop window manager.
+    pub(crate) fn open_comparison_copy(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
+        let Some((_, new)) = self.active_ids() else { return Err("Open the newer document first".into()) };
+        self.dialog = None;
+        if let Err(error) = self.try_open(name, None, std::sync::Arc::new(bytes), None, false) {
+            self.dialog = Some(crate::Dialog::CompareFiles);
+            return Err(error);
+        }
+        if let Some(prompt) = self.password_prompt.as_mut() {
+            prompt.comparison_subject = Some(new);
+        } else if let Some(old) = self.views.last().map(|view| view.id) {
+            self.finish_comparison_copy(new, old);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_comparison_copy(&mut self, subject: DocId, reference: DocId) {
+        if self.active_ids().map(|(_, id)| id) != Some(subject) {
+            if let Some(index) = self.views.iter().position(|view| view.id == reference) {
+                self.close_tab(index);
+            }
+            self.notify_tr("The document changed while you were choosing a file, so nothing was changed.");
+            return;
+        }
+        self.remove_comparison_copy();
+        self.comparison_copy = Some((subject, reference));
+        self.compare_old = Some(reference);
+        self.dialog = Some(crate::Dialog::CompareFiles);
+    }
+
+    pub(crate) fn is_comparison_copy(&self, id: DocId) -> bool {
+        self.comparison_copy.is_some_and(|(_, reference)| reference == id)
+    }
+
+    pub(crate) fn remove_comparison_copy(&mut self) {
+        let Some((_, old)) = self.comparison_copy.take() else { return };
+        self.compare = None;
+        self.compare_old = None;
+        if let Some(index) = self.views.iter().position(|view| view.id == old) {
+            self.close_tab(index);
+        }
+    }
+
     /// Compare the chosen older document with the active one and show the differences.
     pub fn run_compare(&mut self) {
         let Some((i, new)) = self.active_ids() else { return };
@@ -280,6 +327,7 @@ impl PdfCraftApp {
                     self.views[oi].compare_marks.clear();
                 }
                 self.right = None;
+                self.remove_comparison_copy();
             }
         }
     }

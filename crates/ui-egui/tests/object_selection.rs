@@ -354,6 +354,7 @@ fn group_drags_cancel_on_focus_loss_tab_switch_home_and_modal_dialogs() {
         h.state_mut().active = Some(0);
         h.state_mut().dialog = None;
         h.state_mut().pending_link = None;
+        h.state_mut().left_open = true; // 重新打开文件后的定制布局会隐藏工具栏，显式恢复以检查选择摘要。
         h.run_steps(4);
         assert_eq!(objects(&h), before, "cancelled gesture case {case}");
         assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty, "case {case}");
