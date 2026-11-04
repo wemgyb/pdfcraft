@@ -1032,7 +1032,7 @@ fn outline_item(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, item: &OutlineIte
 
 /// The page thumbnails. A click goes to the page; ⌘/Ctrl-click and ⇧-click pick several pages
 /// (the selection page commands and Print act on) without moving the document. Right-click
-/// offers Extract, Cut, Copy and Paste on the selection, or on the page clicked; dragging
+/// offers Rotate, Extract, Cut, Copy and Paste on the selection, or on the page clicked; dragging
 /// moves the selection, or the page grabbed, to the gap it is dropped on.
 fn pages(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, view: &mut crate::DocView, modal: bool, editable: bool, nav: &mut Option<Nav>) {
     // Escape drops the selection while the pointer is over the panel and nothing else wants the key.
@@ -1140,6 +1140,13 @@ fn pages(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, view: &mut crate::DocVie
                         if !view.target_pages().contains(&i) {
                             view.click_page(i, egui::Modifiers::NONE, true);
                         }
+                        for (label, degrees) in [(tl!("Rotate pages clockwise"), 90), (tl!("Rotate pages counterclockwise"), -90)] {
+                            if ui.add_enabled(editable, egui::Button::new(label)).clicked() {
+                                view.pending_edit = Some(pdfcraft_engine::Edit::RotatePages { pages: view.target_pages(), degrees });
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
                         if ui.button(tl!("Extract pages")).clicked() {
                             view.pending_action = Some(crate::canvas::ViewAction::Extract);
                             ui.close();

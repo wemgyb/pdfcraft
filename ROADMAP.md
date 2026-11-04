@@ -157,6 +157,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- **2026-11-04 (M4):** Rotate selected PDF pages from the reader's right rail or thumbnail menu, with undo and save support.
 - **2026-11-02 (M3/M4, macOS local.9):** Combine the local.8 document windows, page drag-out and rectangle selection with main through `afa8e184`. Comparison copies belong to their subject window; page-label input and autosave ownership remain isolated between windows.
 - **2026-10-31 (M3/M4, macOS local.8):** Independent document windows, repeated-open reuse, per-window controls and recovery, compact thumbnail columns, current-page following, PDF drag-out copies, and rectangle page selection in both thumbnail views. The custom source remains based on release 0.8.0.
 - **2026-10-13 (community, M3, #1569 review):** Pixel-only Wayland wheel, wheel-tilt and continuous input use standalone moved events, so Ctrl zoom does not remain latched after the modifier is released (#991); vendored winit patch (13), with a policy test. Estimates unchanged.

@@ -240,7 +240,7 @@ fn the_palette_lists_commands_with_shortcuts_and_runs_them() {
     let mut h = harness();
     h.state_mut().set_option("palette", "rotate pages clockwise").unwrap();
     h.run_steps(3);
-    h.get_by_label("Rotate pages clockwise");
+    assert!(h.get_all_by_label("Rotate pages clockwise").any(|node| node.rect().width() > 32.0));
     h.key_press(Key::Enter);
     h.run_steps(3);
     let app = h.state();
@@ -255,8 +255,9 @@ fn palette_arrow_keys_select_results_and_enter_runs_the_selection() {
     let mut h = harness();
     h.state_mut().set_option("palette", "rotate pages").unwrap();
     h.run_steps(2);
-    h.get_by_label("Rotate pages clockwise");
-    h.get_by_label("Rotate pages counterclockwise");
+    for label in ["Rotate pages clockwise", "Rotate pages counterclockwise"] {
+        assert!(h.get_all_by_label(label).any(|node| node.rect().width() > 32.0));
+    }
     h.key_press(Key::ArrowDown);
     h.run_steps(2);
     h.key_press(Key::Enter);
@@ -456,7 +457,7 @@ fn view_menu_and_tooltips_write_shortcuts_for_the_platform() {
     let h = view_menu(OperatingSystem::Mac);
     h.get_by_label("Actual size ⌘1");
     h.get_by_label("Fit visible ⌘3");
-    h.get_by_label("Rotate view clockwise (⇧⌘+)");
+    h.get_by_label("Rotate view clockwise ⇧⌘+");
     assert_eq!(h.query_all_by_label_contains("Ctrl+").count(), 0, "no Ctrl+ on macOS");
 }
 

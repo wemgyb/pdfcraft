@@ -3541,6 +3541,54 @@ fn picked(h: &Harness<'static, PdfCraftApp>) -> Vec<usize> {
 }
 
 #[test]
+fn reader_rotates_selected_pages_and_saves_them_on_quit() {
+    let dir = TempPdfs::new("reader-rotate");
+    let path = dir.file("rotate.pdf", 3);
+    let opened = path.clone();
+    let mut h = session_harness(move |app| {
+        app.open_path(&opened);
+        app.set_option("panel", "pages").unwrap();
+    });
+    h.get_by_label("Page 3").click_modifiers(Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(picked(&h), [0, 2]);
+    let id = h.state().views[0].id;
+    let rotations = |h: &Harness<'_, PdfCraftApp>| h.state().session.get(id).unwrap().info.pages.iter().map(|page| page.rotation).collect::<Vec<_>>();
+    let thumb_before = h.get_by_label("Page 1").rect();
+    let page_before = h.state().views[0].page_screen_rect(0).unwrap();
+    assert!(page_before.height() > page_before.width());
+    h.get_by_label("Rotate pages clockwise").click();
+    h.run_steps(3);
+    assert_eq!(rotations(&h), [90, 0, 90]);
+    assert_eq!(picked(&h), [0, 2]);
+    assert_eq!(h.state().views[0].rotation, 0);
+    assert!(h.get_by_label("Page 1").rect().height() < thumb_before.height());
+    let page_after = h.state().views[0].page_screen_rect(0).unwrap();
+    assert!(page_after.width() > page_after.height());
+
+    h.get_by_label("Page 1").click_button(egui::PointerButton::Secondary);
+    h.run_steps(2);
+    h.get_all_by_label("Rotate pages counterclockwise").max_by(|a, b| a.rect().width().total_cmp(&b.rect().width())).unwrap().click();
+    h.run_steps(3);
+    assert_eq!(rotations(&h), [0, 0, 0]);
+    h.get_by_label("Rotate pages counterclockwise").click();
+    h.run_steps(3);
+    assert_eq!(rotations(&h), [270, 0, 270]);
+    assert!(h.state().session.get(id).unwrap().dirty);
+    h.state_mut().close_request = Some(CloseRequest::Quit);
+    h.run_steps(3);
+    h.get_by_label_contains("Save changes to “rotate.pdf”");
+    h.get_by_label("Save").click();
+    h.run_steps(3);
+    assert!(h.state().views.is_empty());
+
+    let h = session_harness(move |app| app.open_path(&path));
+    let doc = h.state().session.get(h.state().views[0].id).unwrap();
+    assert_eq!(doc.info.pages.iter().map(|page| page.rotation).collect::<Vec<_>>(), [270, 0, 270]);
+    assert!(!doc.dirty);
+}
+
+#[test]
 fn pages_panel_command_click_picks_pages_without_moving_the_document() {
     let mut h = pages_panel(5);
     // The first ⌘-click on another page keeps the current page (1) selected too.

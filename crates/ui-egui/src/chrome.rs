@@ -635,6 +635,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
         !doc.info.attachments.is_empty(),
     );
     let page_count = doc.info.pages.len();
+    let can_rotate = page_count > 0 && doc.allows_assembly();
     let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
     egui::Panel::right("rail")
         .resizable(false)
@@ -667,7 +668,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
 
             // Page navigation cluster at the bottom (as in Acrobat's rail).
             let view = &mut app.views[index];
-            let mut page_display = None;
+            let mut command = None;
             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let tip = crate::commands::key_tip(ui.ctx(), tl!("Zoom out ({key})"), crate::commands::ZOOM_OUT);
@@ -678,18 +679,22 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 if icons::button(ui, "zoom-in", 32.0, false, &tip).clicked() {
                     view.zoom_step(true);
                 }
-                // Between rotate and zoom, as in Acrobat. Its command runs once `view` is free.
+                // Between rotate and zoom. Commands run once `view` is free.
                 let tip = crate::i18n::fmt(tl!("Page display: {layout}"), &[("layout", tl!(view.layout.label()))]);
                 let resp = icons::button(ui, view.layout.icon(), 32.0, false, &tip);
-                page_display = egui::Popup::menu(&resp)
+                command = egui::Popup::menu(&resp)
                     .show(|ui| {
                         ui.set_min_width(220.0);
                         rail_view_menu(ui, view)
                     })
                     .and_then(|r| r.inner);
-                let tip = crate::commands::key_tip(ui.ctx(), tl!("Rotate view clockwise ({key})"), crate::commands::ROTATE_CW);
-                if icons::button(ui, "rotate-cw", 32.0, false, &tip).clicked() {
-                    view.rotate_view(true);
+                for (id, icon, label) in [
+                    ("page.rotate_ccw", "rotate-ccw", tl!("Rotate pages counterclockwise")),
+                    ("page.rotate", "rotate-cw", tl!("Rotate pages clockwise")),
+                ] {
+                    if ui.add_enabled_ui(can_rotate, |ui| icons::button(ui, icon, 32.0, false, label)).inner.clicked() {
+                        command = Some(id);
+                    }
                 }
                 // Not `columns-2` while fitting the page: that is the two-page view's icon.
                 let fit_icon = if view.fit == Fit::Width { "maximize" } else { "maximize-2" };
@@ -756,7 +761,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     view.page_input = view.current_page_label(labels.get(view.current).map(String::as_str));
                 }
             });
-            if let Some(id) = page_display {
+            if let Some(id) = command {
                 app.execute(id);
             }
         });
