@@ -993,8 +993,8 @@ impl Renderer {
             may_have_transparency,
         );
         let draw_transform = match snapped {
-            Some((_, _, x0, y0)) => Affine::translate((x0, y0)),
-            None => cur_transform * additional_transform,
+            Some((w, h, x0, y0)) if (w, h) == (img_width, img_height) => Affine::translate((x0, y0)),
+            _ => cur_transform * additional_transform,
         };
         self.draw_pixmap(Arc::new(pixmap), quality, draw_transform);
     }
@@ -1402,7 +1402,7 @@ impl<'a> Device<'a> for Renderer {
         match image {
             hayro_interpret::Image::Stencil(s) => {
                 s.with_stencil(
-                    |stencil, paint| {
+                    |mut stencil, paint| {
                         transform *= Affine::scale_non_uniform(
                             stencil.scale_factors.0 as f64,
                             stencil.scale_factors.1 as f64,
@@ -1415,6 +1415,13 @@ impl<'a> Device<'a> for Renderer {
                         let paint = &self.replaced(paint, false);
                         match paint {
                             Paint::Color(c) => {
+                                // Scanned text can be stored as one-bit stencils over a page
+                                // image. When reduced, average their ink coverage so a thin
+                                // stroke cannot disappear between nearest-neighbour samples.
+                                if !self.preview && !self.in_type3_glyph && !self.inside_pattern {
+                                    let (x, y) = x_y_advances(&transform);
+                                    stencil.interpolate |= x.length() < 1.0 && y.length() < 1.0;
+                                }
                                 let color = c.to_rgba().to_rgba8();
                                 let (rgb_bytes, alpha) = (
                                     stencil

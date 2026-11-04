@@ -6658,4 +6658,34 @@ mod local_scan_tests {
     fn smooth_scan_keeps_masked_image_sampling_unchanged() {
         assert_eq!(pixels(true, false), pixels(true, true));
     }
+
+    #[test]
+    fn shrinking_a_stencil_preserves_thin_ink_strokes() {
+        let stencil = format!("{}>", "77".repeat(8 * 64));
+        let content = "q 16 0 0 16 0 0 cm /Ink Do Q";
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 16 16] /Contents 4 0 R
+  /Resources << /XObject << /Ink 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /XObject /Subtype /Image /ImageMask true /Width 64 /Height 64
+  /BitsPerComponent 1 /Filter /ASCIIHexDecode /Length {} >> stream
+{stencil}
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            content.len(),
+            stencil.len(),
+        );
+        let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let rendered = renderer.render(RenderRequest { scale: 1.0, kind: RequestKind::Pixels, ..Default::default() });
+        assert!(rendered.error.is_none(), "{:?}", rendered.error);
+        // Each output pixel covers four input columns, one of which is ink.
+        let gray = rendered.rgba[(8 * 16 + 8) * 4];
+        assert!((175..=205).contains(&gray), "expected quarter ink coverage, got {gray}");
+    }
 }
